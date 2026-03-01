@@ -21,7 +21,7 @@ All of this without revealing which UTXOs you're spending or who is receiving fu
 Generates a zero-knowledge proof using circuit artifacts.
 
 ```javascript
-const { prove } = require('tornado-nova-sdk')
+const { prove } = require('./src/index')
 
 const proof = await prove(input, keyBasePath)
 ```
@@ -135,7 +135,7 @@ const input = {
 ### Basic proof generation
 
 ```javascript
-const { prove } = require('tornado-nova-sdk')
+const { prove } = require('./src/index')
 
 // Prepare circuit input
 const input = {
@@ -164,7 +164,7 @@ console.log('Proof:', proof)
 The SDK's transaction functions handle proof generation automatically:
 
 ```javascript
-const { transaction } = require('tornado-nova-sdk')
+const { transaction } = require('./src/index')
 
 // Proof generation happens internally
 const receipt = await transaction({
@@ -273,7 +273,7 @@ try {
 The SDK also provides `proveZkutil()` for using zkutil instead of snarkjs:
 
 ```javascript
-const { proveZkutil } = require('tornado-nova-sdk')
+const { proveZkutil } = require('./src/index')
 
 const proof = await proveZkutil(input, keyBasePath)
 ```

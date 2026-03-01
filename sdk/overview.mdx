@@ -16,8 +16,12 @@ The SDK consists of several key modules:
 
 ## Installation
 
+Clone the repository and install dependencies:
+
 ```bash
-npm install tornado-nova-sdk
+git clone https://github.com/tornadocash/tornado-nova.git
+cd tornado-nova
+yarn install
 ```
 
 ## Quick start
@@ -25,7 +29,7 @@ npm install tornado-nova-sdk
 Here's a basic example of creating a deposit transaction:
 
 ```javascript
-const { Utxo, Keypair, transaction } = require('tornado-nova-sdk')
+const { Utxo, Keypair, transaction } = require('./src/index')
 const { ethers } = require('hardhat')
 
 // Create a keypair

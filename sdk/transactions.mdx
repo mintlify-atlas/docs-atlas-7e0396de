@@ -12,7 +12,7 @@ The SDK provides several functions for creating and submitting privacy-preservin
 Builds and submits a complete transaction to the TornadoPool contract.
 
 ```javascript
-const { transaction } = require('tornado-nova-sdk')
+const { transaction } = require('./src/index')
 
 const receipt = await transaction({
   tornadoPool,
@@ -67,7 +67,7 @@ The transaction receipt from the blockchain.
 #### Example
 
 ```javascript
-const { Utxo, Keypair, transaction } = require('tornado-nova-sdk')
+const { Utxo, Keypair, transaction } = require('./src/index')
 const { ethers } = require('hardhat')
 
 // Create keypair and output UTXO
@@ -94,7 +94,7 @@ console.log('Transaction hash:', receipt.transactionHash)
 Prepares transaction arguments and external data without submitting to the blockchain.
 
 ```javascript
-const { prepareTransaction } = require('tornado-nova-sdk')
+const { prepareTransaction } = require('./src/index')
 
 const { args, extData } = await prepareTransaction({
   tornadoPool,
@@ -163,7 +163,7 @@ const receipt = await tx.wait()
 Registers an account and executes a transaction in a single call.
 
 ```javascript
-const { registerAndTransact } = require('tornado-nova-sdk')
+const { registerAndTransact } = require('./src/index')
 
 await registerAndTransact({
   tornadoPool,
@@ -199,7 +199,7 @@ Waits for transaction confirmation but doesn't return the receipt.
 Builds a Merkle tree from all commitments stored in the TornadoPool contract.
 
 ```javascript
-const { buildMerkleTree } = require('tornado-nova-sdk')
+const { buildMerkleTree } = require('./src/index')
 
 const tree = await buildMerkleTree({ tornadoPool })
 console.log('Tree root:', tree.root())
@@ -239,7 +239,7 @@ if (index >= 0) {
 Deposit funds into the pool:
 
 ```javascript
-const { Utxo, Keypair, transaction } = require('tornado-nova-sdk')
+const { Utxo, Keypair, transaction } = require('./src/index')
 const { ethers } = require('hardhat')
 
 const keypair = new Keypair()

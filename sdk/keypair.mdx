@@ -141,7 +141,7 @@ const decrypted = keypair.decrypt('0x...')
 ### Generate a new keypair
 
 ```javascript
-const { Keypair } = require('tornado-nova-sdk')
+const { Keypair } = require('./src/keypair')
 
 // Generate random keypair
 const keypair = new Keypair()
@@ -176,7 +176,7 @@ const recipientPubkey = Keypair.fromString(publicAddress)
 ### Encrypt and decrypt UTXO data
 
 ```javascript
-const { Keypair } = require('tornado-nova-sdk')
+const { Keypair } = require('./src/keypair')
 
 // Sender encrypts data
 const senderKeypair = new Keypair()
