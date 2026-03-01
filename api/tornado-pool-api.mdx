@@ -1,0 +1,389 @@
+---
+title: "TornadoPool Contract API"
+description: "Complete reference for the TornadoPool smart contract - the core contract for private transactions using UTXO model"
+---
+
+## Overview
+
+The TornadoPool contract is the main contract that enables private transactions on Layer 2. It allows deposits of arbitrary amounts, shielded transfers between registered users, and withdrawals. The contract uses a UTXO (Unspent Transaction Output) model to manage user funds privately.
+
+**Contract Location:** `contracts/TornadoPool.sol`
+
+## Constants
+
+<ResponseField name="MAX_EXT_AMOUNT" type="int256">
+  Maximum external amount value: `2^248`
+</ResponseField>
+
+<ResponseField name="MAX_FEE" type="uint256">
+  Maximum fee value: `2^248`
+</ResponseField>
+
+<ResponseField name="MIN_EXT_AMOUNT_LIMIT" type="uint256">
+  Minimum external amount limit: `0.5 ether`
+</ResponseField>
+
+## State Variables
+
+<ResponseField name="verifier2" type="IVerifier">
+  Immutable address of the SNARK verifier for 2 inputs
+</ResponseField>
+
+<ResponseField name="verifier16" type="IVerifier">
+  Immutable address of the SNARK verifier for 16 inputs
+</ResponseField>
+
+<ResponseField name="token" type="IERC6777">
+  Immutable address of the ERC20 token used by this pool
+</ResponseField>
+
+<ResponseField name="omniBridge" type="address">
+  Immutable address of the OmniBridge contract for cross-chain functionality
+</ResponseField>
+
+<ResponseField name="l1Unwrapper" type="address">
+  Immutable address of the L1Unwrapper contract
+</ResponseField>
+
+<ResponseField name="multisig" type="address">
+  Immutable address of the multisig governance contract
+</ResponseField>
+
+<ResponseField name="lastBalance" type="uint256">
+  Last recorded token balance of the contract
+</ResponseField>
+
+<ResponseField name="maximumDepositAmount" type="uint256">
+  Maximum amount that can be deposited in a single transaction
+</ResponseField>
+
+<ResponseField name="nullifierHashes" type="mapping(bytes32 => bool)">
+  Mapping to track spent nullifiers to prevent double-spending
+</ResponseField>
+
+## Constructor
+
+```solidity
+constructor(
+  IVerifier _verifier2,
+  IVerifier _verifier16,
+  uint32 _levels,
+  address _hasher,
+  IERC6777 _token,
+  address _omniBridge,
+  address _l1Unwrapper,
+  address _governance,
+  uint256 _l1ChainId,
+  address _multisig
+)
+```
+
+<ParamField path="_verifier2" type="IVerifier" required>
+  The address of SNARK verifier for 2 inputs
+</ParamField>
+
+<ParamField path="_verifier16" type="IVerifier" required>
+  The address of SNARK verifier for 16 inputs
+</ParamField>
+
+<ParamField path="_levels" type="uint32" required>
+  Height of the commitments merkle tree
+</ParamField>
+
+<ParamField path="_hasher" type="address" required>
+  Hasher address for the merkle tree (Poseidon hash)
+</ParamField>
+
+<ParamField path="_token" type="IERC6777" required>
+  Token address for the pool
+</ParamField>
+
+<ParamField path="_omniBridge" type="address" required>
+  OmniBridge address for the specified token
+</ParamField>
+
+<ParamField path="_l1Unwrapper" type="address" required>
+  Address of the L1Helper contract
+</ParamField>
+
+<ParamField path="_governance" type="address" required>
+  Owner address for governance
+</ParamField>
+
+<ParamField path="_l1ChainId" type="uint256" required>
+  Chain ID of L1
+</ParamField>
+
+<ParamField path="_multisig" type="address" required>
+  Multisig address on L2
+</ParamField>
+
+## Public Functions
+
+### initialize
+
+```solidity
+function initialize(uint256 _maximumDepositAmount) external
+```
+
+Initializes the contract with maximum deposit amount. Can only be called once.
+
+<ParamField path="_maximumDepositAmount" type="uint256" required>
+  Maximum amount that can be deposited per transaction
+</ParamField>
+
+**Source:** `contracts/TornadoPool.sol:112`
+
+---
+
+### transact
+
+```solidity
+function transact(Proof memory _args, ExtData memory _extData) public
+```
+
+Main function that allows deposits, transfers, and withdrawals. Handles L2 deposits and validates proofs.
+
+<ParamField path="_args" type="Proof" required>
+  Proof structure containing ZK proof and transaction data
+</ParamField>
+
+<ParamField path="_extData" type="ExtData" required>
+  External data structure containing recipient, amounts, fees, and encrypted outputs
+</ParamField>
+
+**Requirements:**
+- For deposits (extAmount > 0): Amount must be transferred from sender and not exceed maximumDepositAmount
+- Valid merkle root
+- Nullifiers not already spent
+- Valid external data hash
+- Valid public amount calculation
+- Valid ZK proof
+
+**Source:** `contracts/TornadoPool.sol:119`
+
+---
+
+### register
+
+```solidity
+function register(Account memory _account) public
+```
+
+Registers a user's public key in the pool to enable receiving shielded transfers.
+
+<ParamField path="_account" type="Account" required>
+  Account structure containing owner address and public key
+</ParamField>
+
+**Requirements:**
+- Account owner must be msg.sender
+
+**Source:** `contracts/TornadoPool.sol:129`
+
+---
+
+### registerAndTransact
+
+```solidity
+function registerAndTransact(
+  Account memory _account,
+  Proof memory _proofArgs,
+  ExtData memory _extData
+) public
+```
+
+Combines registration and transaction in a single call. Useful for new users making their first deposit.
+
+<ParamField path="_account" type="Account" required>
+  Account structure containing owner address and public key
+</ParamField>
+
+<ParamField path="_proofArgs" type="Proof" required>
+  Proof structure containing ZK proof and transaction data
+</ParamField>
+
+<ParamField path="_extData" type="ExtData" required>
+  External data structure containing recipient, amounts, fees, and encrypted outputs
+</ParamField>
+
+**Source:** `contracts/TornadoPool.sol:134`
+
+---
+
+### onTokenBridged
+
+```solidity
+function onTokenBridged(
+  IERC6777 _token,
+  uint256 _amount,
+  bytes calldata _data
+) external override
+```
+
+Callback function invoked by OmniBridge when tokens are bridged from L1. Automatically processes the deposit transaction.
+
+<ParamField path="_token" type="IERC6777" required>
+  Token contract address (must match pool token)
+</ParamField>
+
+<ParamField path="_amount" type="uint256" required>
+  Amount of tokens bridged
+</ParamField>
+
+<ParamField path="_data" type="bytes" required>
+  Encoded Proof and ExtData for the transaction
+</ParamField>
+
+**Requirements:**
+- Only callable by omniBridge
+- Token must match pool token
+- Amount must match extData.extAmount
+- Bridge must send sufficient tokens
+- Amount must not exceed maximumDepositAmount
+
+**Source:** `contracts/TornadoPool.sol:143`
+
+---
+
+### onTransact
+
+```solidity
+function onTransact(Proof memory _args, ExtData memory _extData) external
+```
+
+Internal wrapper for _transact to enable try-catch from onTokenBridged. Only callable by the contract itself.
+
+<ParamField path="_args" type="Proof" required>
+  Proof structure containing ZK proof and transaction data
+</ParamField>
+
+<ParamField path="_extData" type="ExtData" required>
+  External data structure
+</ParamField>
+
+**Source:** `contracts/TornadoPool.sol:163`
+
+---
+
+### rescueTokens
+
+```solidity
+function rescueTokens(
+  IERC6777 _token,
+  address payable _to,
+  uint256 _balance
+) external
+```
+
+Allows multisig to rescue accidentally sent tokens (not pool tokens). Only callable by multisig.
+
+<ParamField path="_token" type="IERC6777" required>
+  Token contract to rescue (address(0) for ETH)
+</ParamField>
+
+<ParamField path="_to" type="address payable" required>
+  Recipient address
+</ParamField>
+
+<ParamField path="_balance" type="uint256" required>
+  Amount to rescue (0 for full balance)
+</ParamField>
+
+**Requirements:**
+- Only callable by multisig
+- Cannot rescue pool token
+- Cannot send to zero address
+
+**Source:** `contracts/TornadoPool.sol:169`
+
+---
+
+### configureLimits
+
+```solidity
+function configureLimits(uint256 _maximumDepositAmount) public
+```
+
+Updates the maximum deposit amount. Only callable by multisig.
+
+<ParamField path="_maximumDepositAmount" type="uint256" required>
+  New maximum deposit amount
+</ParamField>
+
+**Source:** `contracts/TornadoPool.sol:191`
+
+---
+
+### calculatePublicAmount
+
+```solidity
+function calculatePublicAmount(int256 _extAmount, uint256 _fee) public pure returns (uint256)
+```
+
+Calculates the public amount field for the ZK circuit from external amount and fee.
+
+<ParamField path="_extAmount" type="int256" required>
+  External amount (positive for deposits, negative for withdrawals)
+</ParamField>
+
+<ParamField path="_fee" type="uint256" required>
+  Relayer fee
+</ParamField>
+
+**Returns:** Public amount in field element format
+
+**Requirements:**
+- Fee must be less than MAX_FEE
+- extAmount must be within valid range
+
+**Source:** `contracts/TornadoPool.sol:195`
+
+---
+
+### isSpent
+
+```solidity
+function isSpent(bytes32 _nullifierHash) public view returns (bool)
+```
+
+Checks whether a nullifier hash has already been spent.
+
+<ParamField path="_nullifierHash" type="bytes32" required>
+  Nullifier hash to check
+</ParamField>
+
+**Returns:** `true` if the nullifier has been spent, `false` otherwise
+
+**Source:** `contracts/TornadoPool.sol:203`
+
+---
+
+### verifyProof
+
+```solidity
+function verifyProof(Proof memory _args) public view returns (bool)
+```
+
+Verifies a ZK-SNARK proof using the appropriate verifier (2 or 16 inputs).
+
+<ParamField path="_args" type="Proof" required>
+  Proof structure to verify
+</ParamField>
+
+**Returns:** `true` if the proof is valid, `false` otherwise
+
+**Requirements:**
+- Input nullifiers length must be 2 or 16
+
+**Source:** `contracts/TornadoPool.sol:207`
+
+## Inherited Functions
+
+TornadoPool inherits from:
+- `MerkleTreeWithHistory` - Provides merkle tree functionality
+- `IERC20Receiver` - Token bridge receiver interface
+- `ReentrancyGuard` - Protection against reentrancy attacks
+- `CrossChainGuard` - Cross-chain message verification
+
+See the respective base contracts for additional functions like `isKnownRoot()` from MerkleTreeWithHistory.

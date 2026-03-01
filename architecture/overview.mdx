@@ -1,0 +1,127 @@
+---
+title: Architecture overview
+description: Understanding the core architecture of Tornado Nova's privacy protocol
+---
+
+Tornado Nova implements a privacy-preserving transaction protocol using zero-knowledge proofs, a UTXO model, and Merkle tree-based commitment tracking. This architecture enables private deposits, transfers, and withdrawals on Ethereum and compatible chains.
+
+## Core components
+
+The system consists of three primary layers that work together to provide transaction privacy:
+
+<Steps>
+  <Step title="UTXO model">
+    Manages transaction inputs and outputs using a Bitcoin-like model adapted for privacy. Each UTXO contains an amount, public key, and blinding factor.
+  </Step>
+  
+  <Step title="Merkle tree">
+    Tracks all commitments in a Poseidon hash-based Merkle tree with configurable depth. Maintains a history of 100 roots for transaction validation.
+  </Step>
+  
+  <Step title="Zero-knowledge proofs">
+    Validates transactions without revealing sender, recipient, or amount. Supports 2-input and 16-input transactions using SNARKs.
+  </Step>
+</Steps>
+
+## Transaction flow
+
+The `TornadoPool` contract orchestrates the entire transaction lifecycle through its main `transact` function:
+
+```solidity contracts/TornadoPool.sol
+function transact(Proof memory _args, ExtData memory _extData) public {
+    if (_extData.extAmount > 0) {
+        // for deposits from L2
+        token.transferFrom(msg.sender, address(this), uint256(_extData.extAmount));
+        require(uint256(_extData.extAmount) <= maximumDepositAmount, "amount is larger than maximumDepositAmount");
+    }
+
+    _transact(_args, _extData);
+}
+```
+
+The internal `_transact` function performs critical validations:
+
+1. Verifies the Merkle root is known (within last 100 roots)
+2. Checks that input nullifiers haven't been spent
+3. Validates the zero-knowledge proof
+4. Marks nullifiers as spent to prevent double-spending
+5. Inserts new output commitments into the Merkle tree
+
+<Note>
+Tornado Nova processes transactions in pairs, inserting two output commitments at once for better efficiency compared to single-leaf insertions.
+</Note>
+
+## Data structures
+
+The protocol defines three key structures in the smart contract:
+
+### Proof structure
+
+```solidity contracts/TornadoPool.sol
+struct Proof {
+    bytes proof;
+    bytes32 root;
+    bytes32[] inputNullifiers;
+    bytes32[2] outputCommitments;
+    uint256 publicAmount;
+    bytes32 extDataHash;
+}
+```
+
+### ExtData structure
+
+```solidity contracts/TornadoPool.sol
+struct ExtData {
+    address recipient;
+    int256 extAmount;
+    address relayer;
+    uint256 fee;
+    bytes encryptedOutput1;
+    bytes encryptedOutput2;
+    bool isL1Withdrawal;
+    uint256 l1Fee;
+}
+```
+
+<Warning>
+The `extAmount` field uses a signed integer where positive values represent deposits and negative values represent withdrawals. Maximum allowed value is 2^248.
+</Warning>
+
+## Privacy guarantees
+
+Tornado Nova achieves privacy through several mechanisms:
+
+- **Unlinkability**: Input UTXOs are proven to exist without revealing which specific commitments are being spent
+- **Anonymity**: Transactions don't reveal sender or recipient identities on-chain
+- **Amount hiding**: Transaction amounts are hidden except for public deposit/withdrawal amounts
+- **Encrypted outputs**: Output UTXO data is encrypted to recipient public keys
+
+The system maintains a mapping of spent nullifiers to prevent double-spending:
+
+```solidity contracts/TornadoPool.sol
+mapping(bytes32 => nullifierHashes;
+
+// Check during transaction
+for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+    require(!isSpent(_args.inputNullifiers[i]), "Input is already spent");
+}
+```
+
+## Cross-chain support
+
+The architecture supports cross-chain deposits and withdrawals through the OmniBridge integration:
+
+```solidity contracts/TornadoPool.sol
+function onTokenBridged(
+    IERC6777 _token,
+    uint256 _amount,
+    bytes calldata _data
+) external override {
+    (Proof memory _args, ExtData memory _extData) = abi.decode(_data, (Proof, ExtData));
+    require(_token == token, "provided token is not supported");
+    require(msg.sender == omniBridge, "only omni bridge");
+    // ... validation and transaction processing
+}
+```
+
+This enables private transfers between Layer 1 and Layer 2 networks while maintaining the same privacy guarantees.

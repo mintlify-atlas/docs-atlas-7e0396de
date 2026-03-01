@@ -1,0 +1,92 @@
+---
+title: JavaScript SDK overview
+description: Learn how to use the Tornado Nova JavaScript SDK for building privacy-preserving applications
+---
+
+The Tornado Nova JavaScript SDK provides a complete toolkit for building privacy-preserving applications on Ethereum. It enables developers to create shielded transactions using zero-knowledge proofs.
+
+## Core components
+
+The SDK consists of several key modules:
+
+- **Utxo** - Unspent transaction output management
+- **Keypair** - Key generation and cryptographic operations
+- **Prover** - Zero-knowledge proof generation
+- **Transaction functions** - Build and submit transactions
+
+## Installation
+
+```bash
+npm install tornado-nova-sdk
+```
+
+## Quick start
+
+Here's a basic example of creating a deposit transaction:
+
+```javascript
+const { Utxo, Keypair, transaction } = require('tornado-nova-sdk')
+const { ethers } = require('hardhat')
+
+// Create a keypair
+const keypair = new Keypair()
+
+// Create a UTXO with amount
+const outputUtxo = new Utxo({
+  amount: ethers.utils.parseEther('1.0'),
+  keypair: keypair
+})
+
+// Execute transaction
+const receipt = await transaction({
+  tornadoPool: tornadoPoolContract,
+  outputs: [outputUtxo],
+  fee: 0,
+  recipient: '0x0000000000000000000000000000000000000000',
+  relayer: '0x0000000000000000000000000000000000000000'
+})
+```
+
+## Key features
+
+### Privacy by default
+
+All transactions use zero-knowledge proofs to hide sender, recipient, and amount information on-chain.
+
+### UTXO model
+
+The SDK implements a UTXO-based system similar to Bitcoin, where each transaction consumes inputs and creates outputs.
+
+### Encrypted data
+
+UTXO data is encrypted using the recipient's public key, ensuring only they can access transaction details.
+
+### Merkle tree tracking
+
+The SDK automatically builds and maintains Merkle trees of commitments for proof generation.
+
+## Architecture
+
+The SDK follows this transaction flow:
+
+1. Create input and output UTXOs
+2. Build Merkle tree from on-chain commitments
+3. Generate zero-knowledge proof
+4. Submit transaction to TornadoPool contract
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Utxo class" icon="cube" href="/sdk/utxo">
+    Learn about UTXO creation and management
+  </Card>
+  <Card title="Keypair class" icon="key" href="/sdk/keypair">
+    Generate keys and handle encryption
+  </Card>
+  <Card title="Proof generation" icon="shield-check" href="/sdk/proof-generation">
+    Create zero-knowledge proofs
+  </Card>
+  <Card title="Transactions" icon="exchange" href="/sdk/transactions">
+    Build and submit transactions
+  </Card>
+</CardGroup>

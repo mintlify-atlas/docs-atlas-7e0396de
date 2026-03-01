@@ -1,0 +1,558 @@
+---
+title: "Utility Functions"
+description: "Helper functions for cryptographic operations, encoding, and data manipulation in Tornado Nova"
+---
+
+## Overview
+
+Utility functions provide cryptographic primitives, encoding helpers, and data manipulation tools used throughout the Tornado Nova system.
+
+**Source Locations:** `src/utils.js`, `src/utxo.js`, `src/keypair.js`
+
+## Cryptographic Functions
+
+### poseidonHash
+
+```javascript
+function poseidonHash(items)
+```
+
+Computes Poseidon hash of an array of field elements. Poseidon is a ZK-friendly hash function.
+
+<ParamField path="items" type="Array<BigNumber | number>" required>
+  Array of values to hash
+</ParamField>
+
+**Returns:** `BigNumber` - Hash result as a field element
+
+**Source:** `src/utils.js:7`
+
+<CodeGroup>
+```javascript Usage
+const { poseidonHash } = require('./src/utils')
+const { ethers } = require('hardhat')
+
+const hash = poseidonHash([1, 2, 3])
+console.log(hash.toString())
+
+// Hash commitment
+const commitment = poseidonHash([amount, pubkey, blinding])
+```
+</CodeGroup>
+
+---
+
+### poseidonHash2
+
+```javascript
+function poseidonHash2(a, b)
+```
+
+Computes Poseidon hash of exactly two field elements. Optimized for merkle tree operations.
+
+<ParamField path="a" type="BigNumber | number" required>
+  First value
+</ParamField>
+
+<ParamField path="b" type="BigNumber | number" required>
+  Second value
+</ParamField>
+
+**Returns:** `BigNumber` - Hash result
+
+**Source:** `src/utils.js:8`
+
+<CodeGroup>
+```javascript Usage
+const { poseidonHash2 } = require('./src/utils')
+
+// Used in merkle tree
+const parent = poseidonHash2(leftChild, rightChild)
+```
+</CodeGroup>
+
+---
+
+### randomBN
+
+```javascript
+function randomBN(nbytes = 31)
+```
+
+Generates a cryptographically secure random BigNumber.
+
+<ParamField path="nbytes" type="number" default="31">
+  Number of random bytes to generate (default 31 to stay within field size)
+</ParamField>
+
+**Returns:** `BigNumber` - Random number
+
+**Source:** `src/utils.js:15`
+
+<CodeGroup>
+```javascript Usage
+const { randomBN } = require('./src/utils')
+
+// Generate random blinding factor
+const blinding = randomBN()
+
+// Generate smaller random number
+const randomValue = randomBN(16) // 16 bytes
+```
+</CodeGroup>
+
+## Encoding Functions
+
+### toFixedHex
+
+```javascript
+function toFixedHex(number, length = 32)
+```
+
+Converts a number or Buffer to a fixed-length hex string with '0x' prefix.
+
+<ParamField path="number" type="BigNumber | number | Buffer" required>
+  Value to convert
+</ParamField>
+
+<ParamField path="length" type="number" default="32">
+  Byte length of output (will be padded with zeros)
+</ParamField>
+
+**Returns:** `string` - Hex string of format `0x...` with exactly `length * 2` hex digits
+
+**Source:** `src/utils.js:51`
+
+<CodeGroup>
+```javascript Usage
+const { toFixedHex } = require('./src/utils')
+const { ethers } = require('hardhat')
+
+// Convert address to fixed hex (20 bytes)
+const addressHex = toFixedHex(recipientAddress, 20)
+// "0x000000000000000000000000742d35cc6634c0532925a3b844bc9e7595f0beb"
+
+// Convert number to 32 bytes
+const amountHex = toFixedHex(ethers.utils.parseEther('1.0'))
+// "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"
+
+// Handle negative numbers
+const negativeHex = toFixedHex(-100)
+// Properly encodes as field element
+```
+</CodeGroup>
+
+---
+
+### toBuffer
+
+```javascript
+function toBuffer(value, length)
+```
+
+Converts a value to a Buffer of specified byte length.
+
+<ParamField path="value" type="BigNumber | number" required>
+  Value to convert
+</ParamField>
+
+<ParamField path="length" type="number" required>
+  Byte length of output buffer
+</ParamField>
+
+**Returns:** `Buffer` - Buffer padded to specified length
+
+**Source:** `src/utils.js:65`
+
+<CodeGroup>
+```javascript Usage
+const { toBuffer } = require('./src/utils')
+
+// Convert amount to 31 bytes
+const amountBuf = toBuffer(amount, 31)
+
+// Concatenate multiple values
+const combined = Buffer.concat([
+  toBuffer(amount, 31),
+  toBuffer(blinding, 31)
+])
+```
+</CodeGroup>
+
+---
+
+### getExtDataHash
+
+```javascript
+function getExtDataHash({
+  recipient,
+  extAmount,
+  relayer,
+  fee,
+  encryptedOutput1,
+  encryptedOutput2,
+  isL1Withdrawal,
+  l1Fee
+})
+```
+
+Computes the hash of external data structure for ZK proof verification.
+
+<ParamField path="recipient" type="string | BigNumber" required>
+  Recipient address
+</ParamField>
+
+<ParamField path="extAmount" type="string | BigNumber" required>
+  External amount
+</ParamField>
+
+<ParamField path="relayer" type="string | BigNumber" required>
+  Relayer address
+</ParamField>
+
+<ParamField path="fee" type="string | BigNumber" required>
+  Fee amount
+</ParamField>
+
+<ParamField path="encryptedOutput1" type="bytes" required>
+  First encrypted output
+</ParamField>
+
+<ParamField path="encryptedOutput2" type="bytes" required>
+  Second encrypted output
+</ParamField>
+
+<ParamField path="isL1Withdrawal" type="boolean" required>
+  L1 withdrawal flag
+</ParamField>
+
+<ParamField path="l1Fee" type="BigNumber" required>
+  L1 fee amount
+</ParamField>
+
+**Returns:** `BigNumber` - Hash modulo FIELD_SIZE
+
+**Source:** `src/utils.js:17`
+
+<CodeGroup>
+```javascript Usage
+const { getExtDataHash, toFixedHex } = require('./src/utils')
+
+const extData = {
+  recipient: toFixedHex(recipientAddress, 20),
+  extAmount: toFixedHex(amount),
+  relayer: toFixedHex(relayerAddress, 20),
+  fee: toFixedHex(feeAmount),
+  encryptedOutput1: output1.encrypt(),
+  encryptedOutput2: output2.encrypt(),
+  isL1Withdrawal: false,
+  l1Fee: 0
+}
+
+const extDataHash = getExtDataHash(extData)
+// Used in ZK proof
+```
+</CodeGroup>
+
+---
+
+### shuffle
+
+```javascript
+function shuffle(array)
+```
+
+Randomly shuffles an array in-place using Fisher-Yates algorithm.
+
+<ParamField path="array" type="Array" required>
+  Array to shuffle (modified in-place)
+</ParamField>
+
+**Returns:** `Array` - The shuffled array (same reference)
+
+**Source:** `src/utils.js:74`
+
+<CodeGroup>
+```javascript Usage
+const { shuffle } = require('./src/utils')
+
+// Shuffle inputs for privacy
+const inputs = [utxo1, utxo2, utxo3]
+shuffle(inputs)
+
+// Shuffle outputs
+const outputs = [outputUtxo1, outputUtxo2]
+shuffle(outputs)
+
+// Array is modified in-place
+console.log(inputs) // Randomly ordered
+```
+</CodeGroup>
+
+## Constants
+
+### FIELD_SIZE
+
+```javascript
+const FIELD_SIZE = BigNumber.from(
+  '21888242871839275222246405745257275088548364400416034343698204186575808495617'
+)
+```
+
+The field size for BN254 elliptic curve used in the ZK-SNARKs. All field elements must be less than this value.
+
+**Source:** `src/utils.js:10`
+
+<CodeGroup>
+```javascript Usage
+const { FIELD_SIZE } = require('./src/utils')
+
+// Ensure value is within field
+const fieldElement = value.mod(FIELD_SIZE)
+
+// Calculate public amount
+const publicAmount = BigNumber.from(extAmount)
+  .sub(fee)
+  .add(FIELD_SIZE)
+  .mod(FIELD_SIZE)
+```
+</CodeGroup>
+
+## Utility Classes
+
+### Keypair
+
+See the [Types Reference](/api/types#keypair) for full Keypair class documentation.
+
+**Key Methods:**
+- `constructor(privkey?)` - Create new keypair
+- `toString()` - Export as string
+- `Keypair.fromString(str)` - Import from string  
+- `sign(commitment, merklePath)` - Sign for nullifier
+- `encrypt(bytes)` - Encrypt data
+- `decrypt(data)` - Decrypt data
+
+**Source:** `src/keypair.js:36`
+
+---
+
+### Utxo
+
+See the [Types Reference](/api/types#utxo) for full Utxo class documentation.
+
+**Key Methods:**
+- `constructor({ amount, keypair, blinding, index })` - Create UTXO
+- `getCommitment()` - Get commitment hash
+- `getNullifier()` - Get nullifier hash
+- `encrypt()` - Encrypt UTXO data
+- `Utxo.decrypt(keypair, data, index)` - Decrypt UTXO
+
+**Source:** `src/utxo.js:6`
+
+## Encryption Helpers
+
+### packEncryptedMessage
+
+```javascript
+function packEncryptedMessage(encryptedMessage)
+```
+
+Packs encrypted message object into hex string format.
+
+<ParamField path="encryptedMessage" type="object" required>
+  Encrypted message object with `nonce`, `ephemPublicKey`, `ciphertext` (base64)
+</ParamField>
+
+**Returns:** `string` - Hex string with '0x' prefix
+
+**Format:** 24 bytes nonce + 32 bytes ephemeral public key + ciphertext
+
+**Source:** `src/keypair.js:6`
+
+---
+
+### unpackEncryptedMessage
+
+```javascript
+function unpackEncryptedMessage(encryptedMessage)
+```
+
+Unpacks hex string into encrypted message object.
+
+<ParamField path="encryptedMessage" type="string" required>
+  Hex string (with or without '0x' prefix)
+</ParamField>
+
+**Returns:** `object` - Object with `version`, `nonce`, `ephemPublicKey`, `ciphertext` (all base64)
+
+**Source:** `src/keypair.js:20`
+
+## Testing Utilities
+
+### getSignerFromAddress
+
+```javascript
+async function getSignerFromAddress(address)
+```
+
+Impersonates an address in Hardhat for testing. Only works in local Hardhat network.
+
+<ParamField path="address" type="string" required>
+  Address to impersonate
+</ParamField>
+
+**Returns:** `Promise<Signer>` - Ethers.js signer for the address
+
+**Source:** `src/utils.js:91`
+
+<CodeGroup>
+```javascript Testing Usage
+const { getSignerFromAddress } = require('./src/utils')
+
+// Impersonate the multisig
+const multisigSigner = await getSignerFromAddress(multisigAddress)
+
+// Call restricted function
+const tornadoPool = await ethers.getContractAt(
+  'TornadoPool',
+  poolAddress,
+  multisigSigner
+)
+
+await tornadoPool.configureLimits(newLimit)
+```
+</CodeGroup>
+
+## Usage Examples
+
+<CodeGroup>
+```javascript Complete Transaction Flow
+const { 
+  toFixedHex, 
+  getExtDataHash, 
+  poseidonHash,
+  randomBN,
+  FIELD_SIZE 
+} = require('./src/utils')
+const { Keypair } = require('./src/keypair')
+const Utxo = require('./src/utxo')
+
+// Create keypair
+const keypair = new Keypair()
+
+// Create UTXO
+const utxo = new Utxo({
+  amount: ethers.utils.parseEther('1.0'),
+  keypair,
+  blinding: randomBN()
+})
+
+// Get commitment
+const commitment = utxo.getCommitment()
+console.log(`Commitment: ${toFixedHex(commitment)}`)
+
+// Encrypt for recipient
+const encrypted = utxo.encrypt()
+
+// Create external data
+const extData = {
+  recipient: toFixedHex(recipientAddress, 20),
+  extAmount: toFixedHex(utxo.amount),
+  relayer: toFixedHex(0, 20),
+  fee: toFixedHex(0),
+  encryptedOutput1: encrypted,
+  encryptedOutput2: new Utxo().encrypt(),
+  isL1Withdrawal: false,
+  l1Fee: 0
+}
+
+// Hash external data
+const extDataHash = getExtDataHash(extData)
+console.log(`ExtData hash: ${toFixedHex(extDataHash)}`)
+```
+
+```javascript Key Management
+const { Keypair } = require('./src/keypair')
+const { ethers } = require('hardhat')
+
+// Generate new keypair
+const keypair = new Keypair()
+
+// Export for storage
+const exported = keypair.toString()
+console.log(`Save this: ${exported}`)
+// Example: "0x1abc...def" (128 hex chars)
+
+// Later, import it
+const imported = Keypair.fromString(exported)
+
+// Use for encryption
+const message = Buffer.from('Hello', 'utf8')
+const encrypted = imported.encrypt(message)
+
+// Sign commitment
+const signature = keypair.sign(commitment, index)
+```
+
+```javascript UTXO Management
+const Utxo = require('./src/utxo')
+const { Keypair } = require('./src/keypair')
+
+// Create UTXO
+const utxo = new Utxo({
+  amount: ethers.utils.parseEther('5'),
+  keypair: new Keypair(),
+  index: 42
+})
+
+// Get hashes
+const commitment = utxo.getCommitment()
+const nullifier = utxo.getNullifier()
+
+console.log(`Commitment: ${commitment}`)
+console.log(`Nullifier: ${nullifier}`)
+
+// Encrypt for sending
+const encrypted = utxo.encrypt()
+
+// Recipient decrypts
+const decrypted = Utxo.decrypt(
+  recipientKeypair,
+  encrypted,
+  42 // index from event
+)
+
+console.log(`Received: ${ethers.utils.formatEther(decrypted.amount)} ETH`)
+```
+
+```javascript Field Arithmetic
+const { FIELD_SIZE } = require('./src/utils')
+const { BigNumber } = require('ethers')
+
+// Calculate public amount (used in ZK proof)
+function calculatePublicAmount(extAmount, fee) {
+  const publicAmount = BigNumber.from(extAmount)
+    .sub(fee)
+    .add(FIELD_SIZE)
+    .mod(FIELD_SIZE)
+  
+  return publicAmount
+}
+
+// Deposit: extAmount = 10, fee = 0
+const depositPublic = calculatePublicAmount(10, 0)
+// Result: 10
+
+// Withdrawal: extAmount = -8, fee = 2  
+const withdrawPublic = calculatePublicAmount(-8, 2)
+// Result: FIELD_SIZE - 10 (negative number as field element)
+```
+</CodeGroup>
+
+<Note>
+**Field Elements:** All cryptographic operations work with field elements modulo FIELD_SIZE. Negative numbers are represented as `FIELD_SIZE - abs(value)`.
+</Note>
+
+<Warning>
+**Random Number Generation:** Always use `randomBN()` for generating blinding factors and other cryptographic secrets. Never use `Math.random()` or predictable values.
+</Warning>

@@ -1,0 +1,475 @@
+---
+title: "L1Unwrapper Contract"
+description: "Handles ETH↔WETH bridging between Ethereum mainnet and Gnosis Chain with integrated account registration"
+---
+
+## Overview
+
+The `L1Unwrapper` contract extends the OmniBridge `WETHOmnibridgeRouter` to provide automatic ETH/WETH conversion for cross-chain transfers. It serves as the mainnet entry and exit point for bridging assets while also handling TornadoPool account registrations.
+
+**Contract Location**: `contracts/bridge/L1Unwrapper.sol:20`
+
+## Inheritance
+
+```solidity
+contract L1Unwrapper is WETHOmnibridgeRouter
+```
+
+Inherits from OmniBridge's `WETHOmnibridgeRouter`, which provides base bridging functionality for WETH tokens.
+
+## State Variables
+
+<ParamField path="l1FeeReceiver" type="address payable">
+  Address that receives L1 execution fees. If set to zero address, fees go to `tx.origin` (the transaction relayer). Can be changed by the contract owner to implement custom fee sharing logic.
+</ParamField>
+
+## Constructor
+
+```solidity
+constructor(
+  IOmnibridge _bridge,
+  IWETH _weth,
+  address _owner
+) WETHOmnibridgeRouter(_bridge, _weth, _owner)
+```
+
+<ParamField path="_bridge" type="IOmnibridge">
+  Address of the OmniBridge contract on mainnet
+</ParamField>
+
+<ParamField path="_weth" type="IWETH">
+  Address of the WETH contract on mainnet (0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2)
+</ParamField>
+
+<ParamField path="_owner" type="address">
+  Address with administrative privileges to update configuration
+</ParamField>
+
+## Data Structures
+
+### Account
+
+Represents a TornadoPool account registration:
+
+```solidity
+struct Account {
+  address owner;
+  bytes publicKey;
+}
+```
+
+<ParamField path="owner" type="address">
+  Address that owns the TornadoPool account
+</ParamField>
+
+<ParamField path="publicKey" type="bytes">
+  Public key for the privacy pool account (used for encryption)
+</ParamField>
+
+## Core Functions
+
+### wrapAndRelayTokens
+
+Wraps ETH to WETH and bridges it to the L2 receiver. Optionally registers a TornadoPool account.
+
+```solidity
+function wrapAndRelayTokens(
+  address _receiver,
+  bytes memory _data,
+  Account memory _account
+) public payable
+```
+
+<ParamField path="_receiver" type="address">
+  Address on L2 (Gnosis Chain) that will receive the bridged WETH
+</ParamField>
+
+<ParamField path="_data" type="bytes">
+  Arbitrary data passed to the receiver contract on L2 (if receiver is a contract)
+</ParamField>
+
+<ParamField path="_account" type="Account">
+  TornadoPool account to register. If `_account.owner == msg.sender`, the account is registered and a `PublicKey` event is emitted
+</ParamField>
+
+#### Implementation
+
+```solidity
+function wrapAndRelayTokens(
+  address _receiver,
+  bytes memory _data,
+  Account memory _account
+) public payable {
+  WETH.deposit{ value: msg.value }();
+  bridge.relayTokensAndCall(address(WETH), _receiver, msg.value, _data);
+
+  if (_account.owner == msg.sender) {
+    _register(_account);
+  }
+}
+```
+
+<Steps>
+  <Step title="Wrap ETH to WETH">
+    Deposits the entire `msg.value` to the WETH contract, converting ETH to WETH
+  </Step>
+  
+  <Step title="Initiate Bridge Transfer">
+    Calls `relayTokensAndCall()` on the OmniBridge to transfer WETH to L2 and execute callback
+  </Step>
+  
+  <Step title="Register Account (Optional)">
+    If the account owner matches the caller, registers the TornadoPool account and emits `PublicKey` event
+  </Step>
+</Steps>
+
+#### Usage Example
+
+```solidity
+// Bridge 1 ETH to L2 address and register account
+Account memory account = Account({
+  owner: msg.sender,
+  publicKey: hex"0x..."
+});
+
+l1Unwrapper.wrapAndRelayTokens{value: 1 ether}(
+  l2ReceiverAddress,
+  "", // no additional data
+  account
+);
+```
+
+### onTokenBridged
+
+Callback function invoked by the OmniBridge when tokens are bridged from L2 to L1. Unwraps WETH to ETH and distributes to recipient with fee handling.
+
+```solidity
+function onTokenBridged(
+  address _token,
+  uint256 _value,
+  bytes memory _data
+) external override
+```
+
+<ParamField path="_token" type="address">
+  Address of the bridged token. Must be WETH or the transaction reverts
+</ParamField>
+
+<ParamField path="_value" type="uint256">
+  Amount of WETH bridged (in wei)
+</ParamField>
+
+<ParamField path="_data" type="bytes">
+  ABI-encoded data containing `(address recipient, uint256 l1Fee)`. Must be exactly 64 bytes
+</ParamField>
+
+#### Implementation
+
+```solidity
+function onTokenBridged(
+  address _token,
+  uint256 _value,
+  bytes memory _data
+) external override {
+  require(_token == address(WETH), "only WETH token");
+  require(msg.sender == address(bridge), "only from bridge address");
+  require(_data.length == 64, "incorrect data length");
+
+  WETH.withdraw(_value);
+
+  (address payable receipient, uint256 l1Fee) = abi.decode(_data, (address, uint256));
+
+  AddressHelper.safeSendValue(receipient, _value.sub(l1Fee));
+
+  if (l1Fee > 0) {
+    address payable l1FeeTo = l1FeeReceiver != payable(address(0)) ? l1FeeReceiver : payable(tx.origin);
+    AddressHelper.safeSendValue(l1FeeTo, l1Fee);
+  }
+}
+```
+
+<Steps>
+  <Step title="Validate Bridge Call">
+    Ensures caller is the OmniBridge contract and token is WETH with correct data length
+  </Step>
+  
+  <Step title="Unwrap WETH">
+    Converts WETH back to native ETH
+  </Step>
+  
+  <Step title="Decode Parameters">
+    Extracts recipient address and L1 fee amount from the data payload
+  </Step>
+  
+  <Step title="Send to Recipient">
+    Transfers ETH to recipient (total amount minus L1 fee)
+  </Step>
+  
+  <Step title="Process L1 Fee">
+    If fee > 0, sends fee to either the configured `l1FeeReceiver` or the transaction relayer (`tx.origin`)
+  </Step>
+</Steps>
+
+<Note>
+  **Security Note**: This function can only be called by the OmniBridge contract. The data payload format is strictly validated to prevent malicious inputs.
+</Note>
+
+#### Data Encoding
+
+The `_data` parameter must be encoded as:
+
+```solidity
+bytes memory data = abi.encode(
+  address(recipient),  // 32 bytes
+  uint256(l1Fee)      // 32 bytes
+);                     // Total: 64 bytes
+```
+
+### register
+
+Registers a TornadoPool account and emits the public key.
+
+```solidity
+function register(Account memory _account) public
+```
+
+<ParamField path="_account" type="Account">
+  Account to register. Must have `_account.owner == msg.sender`
+</ParamField>
+
+```solidity
+function register(Account memory _account) public {
+  require(_account.owner == msg.sender, "only owner can be registered");
+  _register(_account);
+}
+```
+
+Emits:
+```solidity
+event PublicKey(address indexed owner, bytes key);
+```
+
+### setL1FeeReceiver
+
+Updates the L1 fee receiver address. Only callable by contract owner.
+
+```solidity
+function setL1FeeReceiver(address payable _receiver) external onlyOwner
+```
+
+<ParamField path="_receiver" type="address payable">
+  New L1 fee receiver address. Set to `address(0)` to send fees to `tx.origin` (relayer)
+</ParamField>
+
+```solidity
+function setL1FeeReceiver(address payable _receiver) external onlyOwner {
+  l1FeeReceiver = _receiver;
+}
+```
+
+## Events
+
+### PublicKey
+
+Emitted when a TornadoPool account is registered:
+
+```solidity
+event PublicKey(address indexed owner, bytes key);
+```
+
+<ParamField path="owner" type="address indexed">
+  Address that owns the registered account
+</ParamField>
+
+<ParamField path="key" type="bytes">
+  Public key associated with the account
+</ParamField>
+
+## L1 Fee Mechanism
+
+The L1 fee system enables sustainable relayer economics:
+
+### Fee Distribution Logic
+
+```solidity
+address payable l1FeeTo = l1FeeReceiver != payable(address(0)) 
+  ? l1FeeReceiver 
+  : payable(tx.origin);
+```
+
+**Default Mode** (`l1FeeReceiver == address(0)`):
+- Fees go directly to `tx.origin` (the relayer who submitted the transaction)
+- Simple, direct compensation for L1 gas costs
+
+**Custom Receiver Mode** (`l1FeeReceiver != address(0)`):
+- Fees sent to a smart contract for advanced logic:
+  - Subsidize transactions based on block base fee
+  - Store surplus ETH for future subsidies
+  - Implement fee sharing between relayer and protocol
+  - Provide partial refunds to users
+
+### Fee Calculation Example
+
+When bridging from L2 to L1:
+
+```solidity
+// On L2, encode withdrawal with fee
+uint256 withdrawAmount = 10 ether;
+uint256 l1Fee = 0.01 ether; // ~$20-50 depending on gas
+
+bytes memory data = abi.encode(
+  userAddress,
+  l1Fee
+);
+
+// After bridging:
+// - User receives: 10 - 0.01 = 9.99 ETH
+// - Relayer receives: 0.01 ETH
+```
+
+## Integration Example
+
+### Bridging ETH from L1 to L2
+
+```solidity
+// User wants to bridge 5 ETH to L2
+address l2Receiver = 0x...; // L2 TornadoPool or user address
+
+Account memory account = Account({
+  owner: msg.sender,
+  publicKey: generatePublicKey() // User's encryption key
+});
+
+l1Unwrapper.wrapAndRelayTokens{value: 5 ether}(
+  l2Receiver,
+  "",
+  account
+);
+```
+
+### Withdrawing from L2 to L1
+
+```solidity
+// On L2, prepare withdrawal data
+address recipient = 0x...; // L1 recipient address
+uint256 l1Fee = 0.02 ether;
+
+bytes memory data = abi.encode(recipient, l1Fee);
+
+// Initiate bridge transfer (OmniBridge will call onTokenBridged on L1)
+omnibridge.relayTokensAndCall(
+  address(weth),
+  address(l1Unwrapper),
+  withdrawalAmount,
+  data
+);
+```
+
+## Security Considerations
+
+<Note>
+  **Critical Validations**
+  
+  The contract enforces strict validation in `onTokenBridged()`:
+  - Only WETH token accepted (prevents malicious token bridging)
+  - Only callable by the OmniBridge contract (prevents unauthorized calls)
+  - Data length must be exactly 64 bytes (prevents malformed inputs)
+  - Uses `SafeMath` for fee calculation (prevents overflow/underflow)
+</Note>
+
+### Potential Issues
+
+1. **Bridge Trust**: Users trust the OmniBridge validators
+2. **Fee Receiver**: Malicious fee receiver could revert and DoS withdrawals
+3. **WETH Dependence**: Contract assumes WETH is the canonical wrapper
+
+## Source Code
+
+Full contract implementation:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.7.0;
+pragma abicoder v2;
+
+import "omnibridge/contracts/helpers/WETHOmnibridgeRouter.sol";
+import "@openzeppelin/contracts/math/SafeMath.sol";
+
+/// @dev Extension for original WETHOmnibridgeRouter that stores TornadoPool account registrations.
+contract L1Unwrapper is WETHOmnibridgeRouter {
+  using SafeMath for uint256;
+
+  // If this address sets to not zero it receives L1_fee.
+  // It can be changed by the multisig.
+  // And should implement fee sharing logic:
+  // - some part to tx.origin - based on block base fee and can be subsidized
+  // - store surplus of ETH for future subsidizions
+  address payable public l1FeeReceiver;
+
+  event PublicKey(address indexed owner, bytes key);
+
+  struct Account {
+    address owner;
+    bytes publicKey;
+  }
+
+  constructor(
+    IOmnibridge _bridge,
+    IWETH _weth,
+    address _owner
+  ) WETHOmnibridgeRouter(_bridge, _weth, _owner) {}
+
+  function register(Account memory _account) public {
+    require(_account.owner == msg.sender, "only owner can be registered");
+    _register(_account);
+  }
+
+  function wrapAndRelayTokens(
+    address _receiver,
+    bytes memory _data,
+    Account memory _account
+  ) public payable {
+    WETH.deposit{ value: msg.value }();
+    bridge.relayTokensAndCall(address(WETH), _receiver, msg.value, _data);
+
+    if (_account.owner == msg.sender) {
+      _register(_account);
+    }
+  }
+
+  function _register(Account memory _account) internal {
+    emit PublicKey(_account.owner, _account.publicKey);
+  }
+
+  function onTokenBridged(
+    address _token,
+    uint256 _value,
+    bytes memory _data
+  ) external override {
+    require(_token == address(WETH), "only WETH token");
+    require(msg.sender == address(bridge), "only from bridge address");
+    require(_data.length == 64, "incorrect data length");
+
+    WETH.withdraw(_value);
+
+    (address payable receipient, uint256 l1Fee) = abi.decode(_data, (address, uint256));
+
+    AddressHelper.safeSendValue(receipient, _value.sub(l1Fee));
+
+    if (l1Fee > 0) {
+      address payable l1FeeTo = l1FeeReceiver != payable(address(0)) ? l1FeeReceiver : payable(tx.origin);
+      AddressHelper.safeSendValue(l1FeeTo, l1Fee);
+    }
+  }
+
+  function setL1FeeReceiver(address payable _receiver) external onlyOwner {
+    l1FeeReceiver = _receiver;
+  }
+}
+```
+
+## Related Documentation
+
+- [Bridge System Overview](/bridge/overview)
+- [CrossChainGuard Contract](/bridge/cross-chain-guard)
+- [OmniBridge Documentation](https://docs.tokenbridge.net/eth-xdai-amb-bridge/about-the-eth-xdai-amb)

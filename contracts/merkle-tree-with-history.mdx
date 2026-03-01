@@ -1,0 +1,474 @@
+---
+title: "MerkleTreeWithHistory Contract"
+description: "Incremental Merkle tree implementation for storing commitments with historical root tracking"
+---
+
+## Overview
+
+The `MerkleTreeWithHistory` contract implements an incremental Merkle tree optimized for privacy applications. It stores commitments (hashed notes) and maintains a history of root values, enabling users to create proofs against recent tree states even as new commitments are added.
+
+<Note>
+This contract is inherited by TornadoPool and forms the foundation of Tornado Nova's privacy mechanism. The Merkle tree allows users to prove membership of their commitments without revealing which specific commitment they own.
+</Note>
+
+## Contract Architecture
+
+```solidity
+contract MerkleTreeWithHistory is Initializable {
+    IHasher public immutable hasher;
+    uint32 public immutable levels;
+    
+    mapping(uint256 => bytes32) public filledSubtrees;
+    mapping(uint256 => bytes32) public roots;
+    uint32 public constant ROOT_HISTORY_SIZE = 100;
+    uint32 public currentRootIndex = 0;
+    uint32 public nextIndex = 0;
+}
+```
+
+## Key Constants
+
+### FIELD_SIZE
+
+```solidity
+uint256 public constant FIELD_SIZE = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+```
+
+The order of the BN254 elliptic curve's scalar field. All Merkle tree elements must be less than this value.
+
+### ZERO_VALUE
+
+```solidity
+uint256 public constant ZERO_VALUE = 21663839004416932945382355908790599225266501822907911457504978515578255421292;
+```
+
+Base zero value for the tree, calculated as `keccak256("tornado") % FIELD_SIZE`. This deterministic value initializes empty tree nodes.
+
+### ROOT_HISTORY_SIZE
+
+```solidity
+uint32 public constant ROOT_HISTORY_SIZE = 100;
+```
+
+<Note>
+The contract maintains the last 100 root values. This allows users to create proofs against any of the last 100 tree states, providing flexibility even as the tree grows.
+</Note>
+
+## Core Functionality
+
+### Constructor
+
+```solidity
+constructor(uint32 _levels, address _hasher) {
+    require(_levels > 0, "_levels should be greater than zero");
+    require(_levels < 32, "_levels should be less than 32");
+    levels = _levels;
+    hasher = IHasher(_hasher);
+}
+```
+
+<ParamField path="_levels" type="uint32">
+  Tree height (depth). Must be between 1 and 31. Tornado Nova typically uses 20 levels, supporting up to 2^20 = 1,048,576 commitments.
+</ParamField>
+
+<ParamField path="_hasher" type="address">
+  Address of the Poseidon hash function contract, used for efficient zero-knowledge-friendly hashing.
+</ParamField>
+
+### _initialize()
+
+Internal initialization function called during proxy setup:
+
+```solidity
+function _initialize() internal {
+    for (uint32 i = 0; i < levels; i++) {
+        filledSubtrees[i] = zeros(i);
+    }
+    roots[0] = zeros(levels);
+}
+```
+
+This populates the `filledSubtrees` array with pre-computed zero values and sets the initial root.
+
+## Hash Functions
+
+### hashLeftRight()
+
+Hashes two tree nodes using the Poseidon hash function:
+
+```solidity
+function hashLeftRight(bytes32 _left, bytes32 _right) public view returns (bytes32) {
+    require(uint256(_left) < FIELD_SIZE, "_left should be inside the field");
+    require(uint256(_right) < FIELD_SIZE, "_right should be inside the field");
+    bytes32[2] memory input;
+    input[0] = _left;
+    input[1] = _right;
+    return hasher.poseidon(input);
+}
+```
+
+<Warning>
+Both inputs must be valid field elements (less than FIELD_SIZE). This ensures compatibility with the zkSNARK circuits.
+</Warning>
+
+**Why Poseidon?**
+
+Poseidon is a zero-knowledge-friendly hash function designed specifically for zkSNARKs:
+- Much more efficient in circuits than SHA-256 or Keccak
+- Fewer constraints (lower proving time)
+- Algebraically structured over the same field as the proof system
+
+## Tree Insertion
+
+### _insert()
+
+Inserts a pair of leaves into the tree:
+
+```solidity
+function _insert(bytes32 _leaf1, bytes32 _leaf2) internal returns (uint32 index) {
+    uint32 _nextIndex = nextIndex;
+    require(_nextIndex != uint32(2)**levels, "Merkle tree is full. No more leaves can be added");
+    
+    uint32 currentIndex = _nextIndex / 2;
+    bytes32 currentLevelHash = hashLeftRight(_leaf1, _leaf2);
+    bytes32 left;
+    bytes32 right;
+    
+    for (uint32 i = 1; i < levels; i++) {
+        if (currentIndex % 2 == 0) {
+            left = currentLevelHash;
+            right = zeros(i);
+            filledSubtrees[i] = currentLevelHash;
+        } else {
+            left = filledSubtrees[i];
+            right = currentLevelHash;
+        }
+        currentLevelHash = hashLeftRight(left, right);
+        currentIndex /= 2;
+    }
+    
+    uint32 newRootIndex = (currentRootIndex + 1) % ROOT_HISTORY_SIZE;
+    currentRootIndex = newRootIndex;
+    roots[newRootIndex] = currentLevelHash;
+    nextIndex = _nextIndex + 2;
+    return _nextIndex;
+}
+```
+
+**Key Features:**
+
+1. **Pair Insertion**: Optimized to insert two leaves at once (both output commitments from a transaction)
+2. **Incremental Updates**: Only updates the path from leaves to root, not the entire tree
+3. **Root History**: Stores each new root in a circular buffer
+4. **Filled Subtrees**: Caches the rightmost node at each level for efficiency
+
+<Note>
+Inserting pairs of leaves (rather than one at a time) reduces the number of hash operations and tree updates, improving gas efficiency.
+</Note>
+
+### How Incremental Merkle Trees Work
+
+The tree maintains only the minimal data needed to compute the root:
+
+```
+               root
+              /    \
+            h1      h2
+           /  \    /  \
+          h3  h4  h5  [zero]
+         / \  / \  / \
+      [c1 c2 c3 c4 c5 c6] [zeros...]
+```
+
+- **filledSubtrees[i]**: Stores the rightmost node at level `i`
+- When inserting on the right side, use the cached `filledSubtrees` value for the left sibling
+- When inserting on the left side, use `zeros(i)` for the right sibling
+
+## Root Management
+
+### isKnownRoot()
+
+Checks if a root exists in the history:
+
+```solidity
+function isKnownRoot(bytes32 _root) public view returns (bool) {
+    if (_root == 0) {
+        return false;
+    }
+    uint32 _currentRootIndex = currentRootIndex;
+    uint32 i = _currentRootIndex;
+    do {
+        if (_root == roots[i]) {
+            return true;
+        }
+        if (i == 0) {
+            i = ROOT_HISTORY_SIZE;
+        }
+        i--;
+    } while (i != _currentRootIndex);
+    return false;
+}
+```
+
+**Usage in TornadoPool:**
+
+```solidity
+require(isKnownRoot(_args.root), "Invalid merkle root");
+```
+
+This allows users to create proofs against any of the last 100 tree states, providing a grace period for proof generation even as the tree updates.
+
+### getLastRoot()
+
+Returns the most recent root:
+
+```solidity
+function getLastRoot() public view returns (bytes32) {
+    return roots[currentRootIndex];
+}
+```
+
+<Note>
+Applications should use `getLastRoot()` to get the current tree state for generating new proofs.
+</Note>
+
+## Zero Values
+
+### zeros()
+
+Provides pre-computed zero values for each tree level:
+
+```solidity
+function zeros(uint256 i) public pure returns (bytes32) {
+    if (i == 0) return bytes32(0x2fe54c60d3acabf3343a35b6eba15db4821b340f76e741e2249685ed4899af6c);
+    else if (i == 1) return bytes32(0x1a332ca2cd2436bdc6796e6e4244ebf6f7e359868b7252e55342f766e4088082);
+    else if (i == 2) return bytes32(0x2fb19ac27499bdf9d7d3b387eff42b6d12bffbc6206e81d0ef0b0d6b24520ebd);
+    // ... up to level 32
+    else revert("Index out of bounds");
+}
+```
+
+Each zero value is computed as:
+
+```
+zeros[0] = ZERO_VALUE
+zeros[i] = PoseidonHash(zeros[i-1], zeros[i-1])
+```
+
+**Why Pre-compute?**
+
+- Saves gas by avoiding repeated hash computations
+- Ensures deterministic tree structure
+- Enables efficient handling of sparse trees
+
+## State Variables
+
+### nextIndex
+
+```solidity
+uint32 public nextIndex = 0;
+```
+
+The index where the next leaf will be inserted. Increments by 2 after each insertion (since we insert pairs).
+
+### currentRootIndex
+
+```solidity
+uint32 public currentRootIndex = 0;
+```
+
+Pointer to the current root in the circular `roots` buffer (0-99).
+
+### filledSubtrees
+
+```solidity
+mapping(uint256 => bytes32) public filledSubtrees;
+```
+
+Caches the rightmost node at each level, enabling O(log n) insertions.
+
+### roots
+
+```solidity
+mapping(uint256 => bytes32) public roots;
+```
+
+Circular buffer storing the last 100 root values.
+
+## Tree Capacity
+
+For a tree with `n` levels:
+
+```solidity
+Max Leaves = 2^n
+```
+
+Common configurations:
+
+| Levels | Capacity | Notes |
+|--------|----------|-------|
+| 20 | 1,048,576 | Default for Tornado Nova |
+| 16 | 65,536 | Smaller deployments |
+| 24 | 16,777,216 | Large-scale systems |
+| 32 | 4,294,967,296 | Maximum (impractical) |
+
+<Warning>
+Once the tree is full (`nextIndex == 2^levels`), no more leaves can be added. The tree must be sized appropriately at deployment.
+</Warning>
+
+## Privacy Properties
+
+### Commitment Hiding
+
+The Merkle tree structure provides **set membership privacy**:
+
+- Users prove their commitment exists in the tree
+- The proof doesn't reveal which leaf contains their commitment
+- All leaves are equally likely to the verifier
+
+### Merkle Proof Generation (Off-Chain)
+
+To spend a commitment, users generate a Merkle proof:
+
+```javascript
+// Off-chain process (example)
+const path = [];
+const indices = [];
+
+let currentIndex = leafIndex;
+for (let i = 0; i < levels; i++) {
+    const isLeft = currentIndex % 2 === 0;
+    const siblingIndex = isLeft ? currentIndex + 1 : currentIndex - 1;
+    
+    path.push(tree[i][siblingIndex]);
+    indices.push(isLeft ? 0 : 1);
+    
+    currentIndex = Math.floor(currentIndex / 2);
+}
+
+// Use path and indices in zkSNARK circuit
+```
+
+The circuit verifies:
+
+```
+root = Hash(Hash(...Hash(Hash(commitment, path[0]), path[1])...), path[levels-1])
+```
+
+## Gas Optimization
+
+### Pair Insertion Efficiency
+
+By inserting pairs, the contract reduces:
+- Number of storage writes
+- Number of root updates
+- Transaction costs per leaf
+
+**Cost Analysis:**
+
+- Single insertion: ~2 * levels * HASH_COST + STORAGE_WRITES
+- Pair insertion: ~levels * HASH_COST + STORAGE_WRITES
+
+For a 20-level tree, pair insertion roughly halves the gas cost per leaf.
+
+### Sparse Tree Optimization
+
+`filledSubtrees` caching means we never need to:
+- Store all tree nodes
+- Traverse the entire tree
+- Recompute unchanged subtrees
+
+## Integration with TornadoPool
+
+TornadoPool extends this contract and uses it to:
+
+```solidity
+contract TornadoPool is MerkleTreeWithHistory, ... {
+    function _transact(Proof memory _args, ExtData memory _extData) internal {
+        // Verify root is known
+        require(isKnownRoot(_args.root), "Invalid merkle root");
+        
+        // ... validate proof ...
+        
+        // Insert new output commitments
+        _insert(_args.outputCommitments[0], _args.outputCommitments[1]);
+        
+        // Emit events with indices
+        emit NewCommitment(_args.outputCommitments[0], nextIndex - 2, _extData.encryptedOutput1);
+        emit NewCommitment(_args.outputCommitments[1], nextIndex - 1, _extData.encryptedOutput2);
+    }
+}
+```
+
+## Security Considerations
+
+### Immutable Parameters
+
+```solidity
+IHasher public immutable hasher;
+uint32 public immutable levels;
+```
+
+<Note>
+Tree parameters are immutable after deployment, preventing attacks that could alter tree structure or hash function.
+</Note>
+
+### Root History Buffer
+
+The 100-root history provides:
+- **Flexibility**: Users have time to generate and submit proofs
+- **Security**: Old roots eventually expire, preventing very old proofs
+- **DoS Resistance**: Attackers can't fill history with invalid roots
+
+### Hash Function Trust
+
+Security depends on:
+1. **Collision Resistance**: Infeasible to find `h(a,b) = h(c,d)` where `(a,b) ≠ (c,d)`
+2. **Pre-image Resistance**: Cannot find inputs from hash output
+3. **Implementation Correctness**: Poseidon contract matches circuit implementation
+
+## Example: Reading Tree State
+
+```solidity
+// Get current state
+bytes32 currentRoot = tornadoPool.getLastRoot();
+uint32 currentIndex = tornadoPool.nextIndex();
+uint32 treeDepth = tornadoPool.levels();
+
+// Check if a root is still valid
+bool isValid = tornadoPool.isKnownRoot(myProofRoot);
+
+// Calculate tree capacity
+uint256 capacity = 2 ** treeDepth;
+uint256 remaining = capacity - currentIndex;
+```
+
+## Visualizing Tree Updates
+
+**Before insertion** (nextIndex = 4):
+
+```
+        root_old
+       /        \
+     h1          h2
+    /  \        /  \
+   c1  c2      c3   c4
+```
+
+**After inserting (c5, c6)** (nextIndex = 6):
+
+```
+          root_new
+         /        \
+       h1'         h2
+      /  \        /  \
+    h3    h4     c3   c4
+   / \   / \
+  c1 c2 c3 c4
+  
+  where h4 = hash(c5, c6)
+        h1' = hash(h3, h4)
+        root_new = hash(h1', h2)
+```
+
+The `roots` mapping now contains both `root_old` and `root_new`, allowing proofs against either state.

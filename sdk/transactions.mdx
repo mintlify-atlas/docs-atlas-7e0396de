@@ -1,0 +1,422 @@
+---
+title: Transaction functions
+description: Learn how to build and submit Tornado Nova transactions
+---
+
+The SDK provides several functions for creating and submitting privacy-preserving transactions to the TornadoPool contract.
+
+## Core functions
+
+### transaction()
+
+Builds and submits a complete transaction to the TornadoPool contract.
+
+```javascript
+const { transaction } = require('tornado-nova-sdk')
+
+const receipt = await transaction({
+  tornadoPool,
+  inputs: [inputUtxo],
+  outputs: [outputUtxo1, outputUtxo2],
+  fee: ethers.utils.parseEther('0.01'),
+  recipient: recipientAddress,
+  relayer: relayerAddress
+})
+```
+
+#### Parameters
+
+<ParamField path="tornadoPool" type="Contract" required>
+  The TornadoPool contract instance
+</ParamField>
+
+<ParamField path="inputs" type="Utxo[]" default="[]">
+  Array of input UTXOs to spend (max 16). Will be padded with dummy UTXOs if needed.
+</ParamField>
+
+<ParamField path="outputs" type="Utxo[]" default="[]">
+  Array of output UTXOs to create (max 2). Will be padded with dummy UTXOs if needed.
+</ParamField>
+
+<ParamField path="fee" type="BigNumber | number | string" default="0">
+  Transaction fee paid to the relayer
+</ParamField>
+
+<ParamField path="recipient" type="string" default="0x0000000000000000000000000000000000000000">
+  Recipient address for withdrawals (use zero address for deposits)
+</ParamField>
+
+<ParamField path="relayer" type="string" default="0x0000000000000000000000000000000000000000">
+  Relayer address that submits the transaction
+</ParamField>
+
+<ParamField path="isL1Withdrawal" type="boolean" default="false">
+  Whether this is an L1 withdrawal on L2 chains
+</ParamField>
+
+<ParamField path="l1Fee" type="number" default="0">
+  Additional fee for L1 withdrawals
+</ParamField>
+
+#### Returns
+
+**Type:** `Promise<TransactionReceipt>`
+
+The transaction receipt from the blockchain.
+
+#### Example
+
+```javascript
+const { Utxo, Keypair, transaction } = require('tornado-nova-sdk')
+const { ethers } = require('hardhat')
+
+// Create keypair and output UTXO
+const keypair = new Keypair()
+const outputUtxo = new Utxo({
+  amount: ethers.utils.parseEther('1.0'),
+  keypair: keypair
+})
+
+// Execute deposit transaction
+const receipt = await transaction({
+  tornadoPool: tornadoPoolContract,
+  outputs: [outputUtxo],
+  fee: 0,
+  recipient: '0x0000000000000000000000000000000000000000',
+  relayer: '0x0000000000000000000000000000000000000000'
+})
+
+console.log('Transaction hash:', receipt.transactionHash)
+```
+
+### prepareTransaction()
+
+Prepares transaction arguments and external data without submitting to the blockchain.
+
+```javascript
+const { prepareTransaction } = require('tornado-nova-sdk')
+
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  inputs: [inputUtxo],
+  outputs: [outputUtxo1, outputUtxo2],
+  fee: ethers.utils.parseEther('0.01'),
+  recipient: recipientAddress,
+  relayer: relayerAddress
+})
+```
+
+#### Parameters
+
+Same as `transaction()` function.
+
+#### Returns
+
+**Type:** `Promise<{ args, extData }>`
+
+An object containing:
+
+<ParamField path="args" type="object">
+  Arguments for the smart contract call:
+  - `proof` - The zero-knowledge proof
+  - `root` - Merkle tree root
+  - `inputNullifiers` - Array of input nullifiers
+  - `outputCommitments` - Array of output commitments
+  - `publicAmount` - Net amount deposited/withdrawn
+  - `extDataHash` - Hash of external data
+</ParamField>
+
+<ParamField path="extData" type="object">
+  External data passed to the contract:
+  - `recipient` - Recipient address
+  - `extAmount` - External amount
+  - `relayer` - Relayer address
+  - `fee` - Transaction fee
+  - `encryptedOutput1` - Encrypted first output
+  - `encryptedOutput2` - Encrypted second output
+  - `isL1Withdrawal` - L1 withdrawal flag
+  - `l1Fee` - L1 fee amount
+</ParamField>
+
+#### Example
+
+```javascript
+// Prepare transaction for later submission
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  inputs: [inputUtxo],
+  outputs: [outputUtxo1, outputUtxo2],
+  fee: ethers.utils.parseEther('0.01'),
+  recipient: recipientAddress,
+  relayer: relayerAddress
+})
+
+// Later: submit to blockchain
+const tx = await tornadoPool.transact(args, extData, {
+  gasLimit: 2e6
+})
+const receipt = await tx.wait()
+```
+
+### registerAndTransact()
+
+Registers an account and executes a transaction in a single call.
+
+```javascript
+const { registerAndTransact } = require('tornado-nova-sdk')
+
+await registerAndTransact({
+  tornadoPool,
+  account: accountAddress,
+  inputs: [inputUtxo],
+  outputs: [outputUtxo1, outputUtxo2],
+  fee: ethers.utils.parseEther('0.01'),
+  recipient: recipientAddress,
+  relayer: relayerAddress
+})
+```
+
+#### Parameters
+
+Same as `transaction()` plus:
+
+<ParamField path="account" type="string" required>
+  The account address to register
+</ParamField>
+
+#### Returns
+
+**Type:** `Promise<void>`
+
+Waits for transaction confirmation but doesn't return the receipt.
+
+<Note>
+  This function is useful for first-time users who need to register before transacting.
+</Note>
+
+### buildMerkleTree()
+
+Builds a Merkle tree from all commitments stored in the TornadoPool contract.
+
+```javascript
+const { buildMerkleTree } = require('tornado-nova-sdk')
+
+const tree = await buildMerkleTree({ tornadoPool })
+console.log('Tree root:', tree.root())
+```
+
+#### Parameters
+
+<ParamField path="tornadoPool" type="Contract" required>
+  The TornadoPool contract instance
+</ParamField>
+
+#### Returns
+
+**Type:** `Promise<MerkleTree>`
+
+A MerkleTree instance with height 5 containing all commitments from the contract.
+
+#### Example
+
+```javascript
+const tree = await buildMerkleTree({ tornadoPool })
+
+// Find UTXO index in tree
+const commitment = inputUtxo.getCommitment()
+const index = tree.indexOf(toFixedHex(commitment))
+
+if (index >= 0) {
+  console.log('UTXO found at index:', index)
+  inputUtxo.index = index
+}
+```
+
+## Transaction types
+
+### Deposit transaction
+
+Deposit funds into the pool:
+
+```javascript
+const { Utxo, Keypair, transaction } = require('tornado-nova-sdk')
+const { ethers } = require('hardhat')
+
+const keypair = new Keypair()
+const depositAmount = ethers.utils.parseEther('10.0')
+
+const outputUtxo = new Utxo({
+  amount: depositAmount,
+  keypair: keypair
+})
+
+const receipt = await transaction({
+  tornadoPool,
+  outputs: [outputUtxo],
+  fee: 0,
+  recipient: '0x0000000000000000000000000000000000000000',
+  relayer: '0x0000000000000000000000000000000000000000'
+})
+
+console.log('Deposited:', depositAmount.toString())
+console.log('Save this keypair:', keypair.toString())
+```
+
+### Transfer transaction
+
+Transfer funds between keypairs privately:
+
+```javascript
+const senderKeypair = Keypair.fromString(senderAddress)
+const receiverKeypair = Keypair.fromString(receiverAddress)
+
+// Build Merkle tree to find input UTXO
+const tree = await buildMerkleTree({ tornadoPool })
+inputUtxo.index = tree.indexOf(toFixedHex(inputUtxo.getCommitment()))
+
+const outputUtxo1 = new Utxo({
+  amount: ethers.utils.parseEther('3.0'),
+  keypair: receiverKeypair
+})
+
+const outputUtxo2 = new Utxo({
+  amount: ethers.utils.parseEther('7.0'),
+  keypair: senderKeypair // change
+})
+
+const receipt = await transaction({
+  tornadoPool,
+  inputs: [inputUtxo],
+  outputs: [outputUtxo1, outputUtxo2],
+  fee: 0,
+  recipient: '0x0000000000000000000000000000000000000000',
+  relayer: '0x0000000000000000000000000000000000000000'
+})
+```
+
+### Withdrawal transaction
+
+Withdraw funds to an Ethereum address:
+
+```javascript
+const tree = await buildMerkleTree({ tornadoPool })
+inputUtxo.index = tree.indexOf(toFixedHex(inputUtxo.getCommitment()))
+
+const withdrawAmount = ethers.utils.parseEther('5.0')
+const fee = ethers.utils.parseEther('0.1')
+
+const changeUtxo = new Utxo({
+  amount: inputUtxo.amount.sub(withdrawAmount).sub(fee),
+  keypair: myKeypair
+})
+
+const receipt = await transaction({
+  tornadoPool,
+  inputs: [inputUtxo],
+  outputs: [changeUtxo],
+  fee: fee,
+  recipient: myEthAddress,
+  relayer: relayerAddress
+})
+
+console.log('Withdrawn to:', myEthAddress)
+```
+
+## Advanced usage
+
+### Multiple inputs
+
+Combine multiple UTXOs:
+
+```javascript
+const tree = await buildMerkleTree({ tornadoPool })
+
+// Set indices for all inputs
+for (const utxo of inputUtxos) {
+  utxo.index = tree.indexOf(toFixedHex(utxo.getCommitment()))
+}
+
+const totalInput = inputUtxos.reduce(
+  (sum, utxo) => sum.add(utxo.amount),
+  ethers.BigNumber.from(0)
+)
+
+const outputUtxo = new Utxo({
+  amount: totalInput,
+  keypair: myKeypair
+})
+
+const receipt = await transaction({
+  tornadoPool,
+  inputs: inputUtxos,
+  outputs: [outputUtxo],
+  fee: 0,
+  recipient: '0x0000000000000000000000000000000000000000',
+  relayer: '0x0000000000000000000000000000000000000000'
+})
+```
+
+### Using a relayer
+
+```javascript
+const receipt = await transaction({
+  tornadoPool,
+  inputs: [inputUtxo],
+  outputs: [outputUtxo],
+  fee: ethers.utils.parseEther('0.1'),
+  recipient: withdrawAddress,
+  relayer: relayerAddress // Relayer submits transaction
+})
+```
+
+<Note>
+  When using a relayer, ensure the fee is sufficient to incentivize the relayer to submit your transaction.
+</Note>
+
+## Transaction validation
+
+The SDK automatically validates:
+
+- **Input/output count**: Max 16 inputs, max 2 outputs
+- **Balance**: `sum(inputs) = sum(outputs) + fee + extAmount`
+- **UTXO indices**: All input UTXOs must exist in the Merkle tree
+- **Private keys**: All input UTXOs must have private keys for signing
+
+If validation fails, an error is thrown:
+
+```javascript
+try {
+  const receipt = await transaction({
+    tornadoPool,
+    inputs: tooManyInputs, // Error: too many inputs
+    outputs: [outputUtxo]
+  })
+} catch (error) {
+  console.error('Transaction failed:', error.message)
+}
+```
+
+## Gas considerations
+
+Transactions use a default gas limit of 2,000,000. For complex transactions, you may need more:
+
+```javascript
+// Prepare transaction first
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  inputs: manyInputs,
+  outputs: [outputUtxo1, outputUtxo2]
+})
+
+// Submit with custom gas limit
+const tx = await tornadoPool.transact(args, extData, {
+  gasLimit: 5e6 // 5 million gas
+})
+const receipt = await tx.wait()
+```
+
+## Related
+
+- [Utxo class](/sdk/utxo) - Create and manage UTXOs
+- [Keypair class](/sdk/keypair) - Generate keypairs for UTXOs
+- [Proof generation](/sdk/proof-generation) - How proofs are generated

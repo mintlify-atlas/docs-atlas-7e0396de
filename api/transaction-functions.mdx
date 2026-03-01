@@ -1,0 +1,482 @@
+---
+title: "Transaction Functions"
+description: "JavaScript functions for creating and executing private transactions on Tornado Nova"
+---
+
+## Overview
+
+These functions provide a high-level API for interacting with the TornadoPool contract. They handle proof generation, merkle tree construction, and transaction submission.
+
+**Source Location:** `src/index.js`
+
+## Functions
+
+### buildMerkleTree
+
+```javascript
+async function buildMerkleTree({ tornadoPool })
+```
+
+Builds a local merkle tree from all commitments in the TornadoPool. Required for generating proofs.
+
+<ParamField path="tornadoPool" type="Contract" required>
+  Ethers.js contract instance of TornadoPool
+</ParamField>
+
+**Returns:** `MerkleTree` - A fixed-merkle-tree instance containing all commitments
+
+**Process:**
+1. Queries all NewCommitment events from block 0
+2. Sorts events by index
+3. Extracts commitment hashes
+4. Constructs merkle tree using Poseidon hash function
+
+**Source:** `src/index.js:11`
+
+<CodeGroup>
+```javascript Usage
+const { buildMerkleTree } = require('./src/index')
+const { ethers } = require('hardhat')
+
+const tornadoPool = await ethers.getContractAt('TornadoPool', poolAddress)
+const tree = await buildMerkleTree({ tornadoPool })
+
+console.log(`Tree root: ${tree.root()}`)
+console.log(`Tree has ${tree.elements.length} commitments`)
+```
+</CodeGroup>
+
+---
+
+### prepareTransaction
+
+```javascript
+async function prepareTransaction({
+  tornadoPool,
+  inputs = [],
+  outputs = [],
+  fee = 0,
+  recipient = 0,
+  relayer = 0,
+  isL1Withdrawal = false,
+  l1Fee = 0
+})
+```
+
+Prepares a transaction by generating a ZK proof without submitting it on-chain. Useful for estimating gas or when you need to submit the transaction separately.
+
+<ParamField path="tornadoPool" type="Contract" required>
+  Ethers.js contract instance of TornadoPool
+</ParamField>
+
+<ParamField path="inputs" type="Utxo[]" default="[]">
+  Array of input UTXOs to spend (1-16 UTXOs). Will be padded with dummy UTXOs if needed.
+</ParamField>
+
+<ParamField path="outputs" type="Utxo[]" default="[]">
+  Array of output UTXOs to create (1-2 UTXOs). Will be padded with dummy UTXOs if needed.
+</ParamField>
+
+<ParamField path="fee" type="BigNumber | number" default="0">
+  Relayer fee in token wei. Goes to the relayer address.
+</ParamField>
+
+<ParamField path="recipient" type="string" default="0">
+  Withdrawal recipient address (for withdrawals only, set to 0 for pure transfers)
+</ParamField>
+
+<ParamField path="relayer" type="string" default="0">
+  Relayer address to receive fees
+</ParamField>
+
+<ParamField path="isL1Withdrawal" type="boolean" default="false">
+  If true, withdraws to L1 via OmniBridge
+</ParamField>
+
+<ParamField path="l1Fee" type="BigNumber | number" default="0">
+  Fee for L1 execution (only for L1 withdrawals)
+</ParamField>
+
+**Returns:** `Promise<{ args, extData }>`
+
+<ResponseField name="args" type="Proof">
+  Proof structure to pass to contract:
+  - `proof` - ZK-SNARK proof bytes
+  - `root` - Merkle tree root
+  - `inputNullifiers` - Array of nullifier hashes
+  - `outputCommitments` - Array of commitment hashes
+  - `publicAmount` - Public amount field
+  - `extDataHash` - Hash of external data
+</ResponseField>
+
+<ResponseField name="extData" type="ExtData">
+  External data structure:
+  - `recipient` - Withdrawal recipient
+  - `extAmount` - External amount (positive for deposits, negative for withdrawals)
+  - `relayer` - Relayer address
+  - `fee` - Relayer fee
+  - `encryptedOutput1` - Encrypted first output
+  - `encryptedOutput2` - Encrypted second output
+  - `isL1Withdrawal` - L1 withdrawal flag
+  - `l1Fee` - L1 execution fee
+</ResponseField>
+
+**Throws:**
+- Error if inputs length > 16 or outputs length > 2
+
+**Source:** `src/index.js:100`
+
+<CodeGroup>
+```javascript Deposit Example
+const Utxo = require('./src/utxo')
+const { prepareTransaction } = require('./src/index')
+
+// Create output UTXOs for recipient
+const utxo1 = new Utxo({ 
+  amount: ethers.utils.parseEther('5'),
+  keypair: recipientKeypair 
+})
+const utxo2 = new Utxo({ 
+  amount: ethers.utils.parseEther('5'),
+  keypair: recipientKeypair 
+})
+
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  inputs: [], // No inputs for deposit
+  outputs: [utxo1, utxo2],
+  fee: 0,
+  recipient: 0,
+  relayer: 0
+})
+
+// extData.extAmount will be 10 ETH (sum of outputs)
+console.log(`Deposit amount: ${extData.extAmount}`)
+```
+
+```javascript Transfer Example
+const { prepareTransaction } = require('./src/index')
+
+// Spend existing UTXOs and create new ones
+const newUtxo1 = new Utxo({ 
+  amount: ethers.utils.parseEther('3'),
+  keypair: recipientKeypair 
+})
+const newUtxo2 = new Utxo({ 
+  amount: ethers.utils.parseEther('2'),
+  keypair: senderKeypair // change back to sender
+})
+
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  inputs: [existingUtxo], // Spend 5 ETH UTXO
+  outputs: [newUtxo1, newUtxo2],
+  fee: 0,
+  recipient: 0,
+  relayer: 0
+})
+
+// extData.extAmount will be 0 (balanced transaction)
+```
+
+```javascript Withdrawal Example
+const { prepareTransaction } = require('./src/index')
+
+const changeUtxo = new Utxo({ 
+  amount: ethers.utils.parseEther('2'),
+  keypair: myKeypair 
+})
+
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  inputs: [utxo1, utxo2], // Spend 10 ETH
+  outputs: [changeUtxo, new Utxo()], // 2 ETH change
+  fee: ethers.utils.parseEther('0.1'),
+  recipient: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  relayer: relayerAddress,
+  isL1Withdrawal: false,
+  l1Fee: 0
+})
+
+// extData.extAmount will be -7.9 ETH (10 - 2 - 0.1)
+```
+
+```javascript L1 Withdrawal Example
+const { prepareTransaction } = require('./src/index')
+
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  inputs: [utxo],
+  outputs: [new Utxo(), new Utxo()], // Withdraw everything
+  fee: ethers.utils.parseEther('0.1'),
+  recipient: l1RecipientAddress,
+  relayer: relayerAddress,
+  isL1Withdrawal: true,
+  l1Fee: ethers.utils.parseEther('0.01') // L1 execution fee
+})
+
+// Tokens will be bridged to L1 and unwrapped to ETH
+```
+</CodeGroup>
+
+---
+
+### transaction
+
+```javascript
+async function transaction({ tornadoPool, ...rest })
+```
+
+Executes a complete transaction: prepares the proof and submits it to the TornadoPool contract.
+
+<ParamField path="tornadoPool" type="Contract" required>
+  Ethers.js contract instance of TornadoPool
+</ParamField>
+
+<ParamField path="...rest" type="object">
+  All other parameters from `prepareTransaction` (inputs, outputs, fee, etc.)
+</ParamField>
+
+**Returns:** `Promise<TransactionReceipt>` - Ethers.js transaction receipt
+
+**Process:**
+1. Calls `prepareTransaction` to generate proof
+2. Calls `tornadoPool.transact(args, extData)` with gas limit of 2M
+3. Waits for transaction confirmation
+4. Returns transaction receipt
+
+**Source:** `src/index.js:142`
+
+<CodeGroup>
+```javascript Basic Usage
+const { transaction } = require('./src/index')
+const Utxo = require('./src/utxo')
+
+const output = new Utxo({ 
+  amount: ethers.utils.parseEther('10'),
+  keypair: myKeypair 
+})
+
+const receipt = await transaction({
+  tornadoPool,
+  inputs: [],
+  outputs: [output, new Utxo()],
+  fee: 0,
+  recipient: 0,
+  relayer: 0
+})
+
+console.log(`Transaction hash: ${receipt.transactionHash}`)
+console.log(`Gas used: ${receipt.gasUsed}`)
+```
+
+```javascript With Token Approval
+const { transaction } = require('./src/index')
+
+// For deposits, approve tokens first
+const depositAmount = ethers.utils.parseEther('10')
+await token.approve(tornadoPool.address, depositAmount)
+
+const receipt = await transaction({
+  tornadoPool,
+  inputs: [],
+  outputs: [new Utxo({ amount: depositAmount, keypair: myKeypair })],
+})
+```
+
+```javascript Error Handling
+const { transaction } = require('./src/index')
+
+try {
+  const receipt = await transaction({
+    tornadoPool,
+    inputs: [utxo],
+    outputs: [newUtxo],
+  })
+  console.log('Success!', receipt.transactionHash)
+} catch (error) {
+  if (error.message.includes('Invalid merkle root')) {
+    console.error('Tree is outdated, rebuild it')
+  } else if (error.message.includes('Input is already spent')) {
+    console.error('UTXO already spent')
+  } else if (error.message.includes('Invalid transaction proof')) {
+    console.error('Proof generation failed')
+  } else {
+    console.error('Transaction failed:', error)
+  }
+}
+```
+</CodeGroup>
+
+---
+
+### registerAndTransact
+
+```javascript
+async function registerAndTransact({ tornadoPool, account, ...rest })
+```
+
+Registers an account and executes a transaction in a single call. Useful for first-time deposits.
+
+<ParamField path="tornadoPool" type="Contract" required>
+  Ethers.js contract instance of TornadoPool
+</ParamField>
+
+<ParamField path="account" type="Account" required>
+  Account object with:
+  - `owner` (address) - Account owner address
+  - `publicKey` (bytes) - Public key for receiving notes
+</ParamField>
+
+<ParamField path="...rest" type="object">
+  All other parameters from `prepareTransaction`
+</ParamField>
+
+**Returns:** `Promise<void>` - Resolves when transaction is confirmed
+
+**Process:**
+1. Calls `prepareTransaction` to generate proof
+2. Calls `tornadoPool.registerAndTransact(account, args, extData)`
+3. Waits for transaction confirmation
+
+**Source:** `src/index.js:154`
+
+<CodeGroup>
+```javascript First Deposit with Registration
+const { registerAndTransact } = require('./src/index')
+const { Keypair } = require('./src/keypair')
+const Utxo = require('./src/utxo')
+
+const keypair = new Keypair()
+const depositAmount = ethers.utils.parseEther('10')
+
+// Approve tokens
+await token.approve(tornadoPool.address, depositAmount)
+
+// Register and deposit
+const account = {
+  owner: await signer.getAddress(),
+  publicKey: keypair.toString()
+}
+
+await registerAndTransact({
+  tornadoPool,
+  account,
+  inputs: [],
+  outputs: [
+    new Utxo({ amount: depositAmount, keypair })
+  ]
+})
+
+console.log('Registered and deposited!')
+```
+
+```javascript With ethers.js Signer
+const { registerAndTransact } = require('./src/index')
+
+const tornadoPool = await ethers.getContractAt(
+  'TornadoPool',
+  poolAddress,
+  signer // Connect with signer
+)
+
+const keypair = new Keypair()
+const account = {
+  owner: await signer.getAddress(),
+  publicKey: keypair.toString()
+}
+
+await registerAndTransact({
+  tornadoPool,
+  account,
+  outputs: [new Utxo({ amount: depositAmount, keypair })]
+})
+```
+</CodeGroup>
+
+## Transaction Types by Parameters
+
+<Tabs>
+  <Tab title="Deposit">
+    Deposits add funds to the pool from an external account.
+    
+    ```javascript
+    {
+      inputs: [],
+      outputs: [utxo1, utxo2],
+      fee: 0,
+      recipient: 0,
+      relayer: 0
+    }
+    ```
+    
+    - No inputs (empty array)
+    - Outputs define how much to deposit
+    - `extAmount` = sum of outputs (positive)
+    - Must approve tokens before calling
+  </Tab>
+  
+  <Tab title="Transfer">
+    Shielded transfers between users within the pool.
+    
+    ```javascript
+    {
+      inputs: [existingUtxo],
+      outputs: [recipientUtxo, changeUtxo],
+      fee: 0,
+      recipient: 0,
+      relayer: 0
+    }
+    ```
+    
+    - Input total = output total
+    - `extAmount` = 0 (balanced)
+    - No external funds movement
+  </Tab>
+  
+  <Tab title="Withdrawal">
+    Withdraws funds from the pool to an external address.
+    
+    ```javascript
+    {
+      inputs: [utxo1, utxo2],
+      outputs: [changeUtxo, dummyUtxo],
+      fee: relayerFee,
+      recipient: withdrawalAddress,
+      relayer: relayerAddress
+    }
+    ```
+    
+    - Input total > output total
+    - `extAmount` = negative (withdrawal amount + fee)
+    - Must specify recipient address
+  </Tab>
+  
+  <Tab title="L1 Withdrawal">
+    Withdraws and bridges funds back to L1.
+    
+    ```javascript
+    {
+      inputs: [utxo],
+      outputs: [new Utxo(), new Utxo()],
+      fee: relayerFee,
+      recipient: l1Address,
+      relayer: relayerAddress,
+      isL1Withdrawal: true,
+      l1Fee: l1ExecutionFee
+    }
+    ```
+    
+    - Same as withdrawal but with `isL1Withdrawal: true`
+    - Include `l1Fee` for L1 execution costs
+    - Tokens bridged via OmniBridge and unwrapped to ETH
+  </Tab>
+</Tabs>
+
+<Note>
+**Input/Output Padding:** The library automatically pads inputs to 2 or 16 and outputs to 2 using dummy UTXOs with zero amount. You don't need to manually add dummy UTXOs.
+</Note>
+
+<Warning>
+**Gas Limit:** All transaction functions use a fixed gas limit of 2,000,000. For transactions with 16 inputs, you may need to adjust this limit.
+</Warning>

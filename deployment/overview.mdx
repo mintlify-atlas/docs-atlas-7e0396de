@@ -1,0 +1,86 @@
+---
+title: Deployment Overview
+description: Overview of the Tornado Nova deployment architecture across L1 and L2 networks
+---
+
+Tornado Nova uses a cross-chain architecture that deploys contracts on both Layer 1 (mainnet) and Layer 2 (Gnosis Chain/xDai) networks. This distributed approach enables efficient privacy transactions while maintaining security through cross-chain governance.
+
+## Architecture Overview
+
+The system consists of two main deployment components:
+
+1. **L1 Deployment (Mainnet)** - L1Unwrapper contract for handling native token withdrawals
+2. **L2 Deployment (Gnosis Chain)** - TornadoPool core contract with privacy features
+
+## Key Components
+
+### L1 Components
+
+- **L1Unwrapper**: Unwraps wrapped tokens (e.g., WETH → ETH) for withdrawals on mainnet
+- **OmniBridge**: Token bridge for cross-chain transfers
+- **Governance**: L1 governance contract that controls upgrades via AMB bridge
+
+### L2 Components
+
+- **TornadoPool**: Main privacy pool contract using UTXO model
+- **Verifiers**: ZK-SNARK proof verifiers (2-input and 16-input)
+- **Hasher**: Poseidon hash function for Merkle tree operations
+- **CrossChainUpgradeableProxy**: Proxy contract enabling cross-chain governance
+
+## Deployment Features
+
+<Note>
+All contracts use deterministic deployment via CREATE2 with a salt value, ensuring consistent addresses across networks.
+</Note>
+
+### Deterministic Addresses
+
+Tornado Nova uses the SingletonFactory pattern with a fixed salt to generate deterministic contract addresses:
+
+```javascript
+const salt = '0x0000000000000000000000000000000000000000000000000000000047941987';
+```
+
+This ensures:
+- Predictable contract addresses before deployment
+- Same addresses across different networks (with same deployment parameters)
+- Simplified integration and configuration
+
+### Cross-Chain Governance
+
+The system uses the Arbitrary Message Bridge (AMB) protocol to enable L1 governance to control L2 contracts:
+
+- Governance proposals are executed on L1
+- Messages are relayed via AMB bridge to L2
+- L2 proxy verifies the caller is the authorized L1 governance contract
+- Upgrades and configuration changes take effect on L2
+
+## Network Configuration
+
+Tornado Nova supports multiple network pairs:
+
+| L1 Network | L2 Network | Primary Token |
+|-----------|-----------|---------------|
+| Ethereum Mainnet | Gnosis Chain | WETH |
+| BSC | Gnosis Chain | WBNB |
+
+<Warning>
+Ensure you configure the correct bridge addresses and chain IDs for your target networks. Incorrect configuration can lead to loss of governance control.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="L1 Deployment" icon="layer-group" href="./l1-deployment">
+    Deploy the L1Unwrapper contract on mainnet
+  </Card>
+  <Card title="L2 Deployment" icon="network-wired" href="./l2-deployment">
+    Deploy the TornadoPool system on Gnosis Chain
+  </Card>
+  <Card title="Configuration" icon="cog" href="./configuration">
+    Configure deployment parameters and network settings
+  </Card>
+  <Card title="Governance" icon="gavel" href="../operations/governance">
+    Learn about cross-chain governance operations
+  </Card>
+</CardGroup>

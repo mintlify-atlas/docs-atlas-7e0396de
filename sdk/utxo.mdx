@@ -1,0 +1,189 @@
+---
+title: Utxo class
+description: Documentation for the Utxo class that manages unspent transaction outputs
+---
+
+The `Utxo` class represents an unspent transaction output (UTXO) in Tornado Nova. A complete transaction consists of 2-16 input UTXOs and 2 output UTXOs.
+
+## Constructor
+
+Initialize a new UTXO with optional parameters.
+
+```javascript
+const utxo = new Utxo({
+  amount: ethers.utils.parseEther('1.0'),
+  keypair: myKeypair,
+  blinding: randomBN(),
+  index: null
+})
+```
+
+### Parameters
+
+<ParamField path="amount" type="BigNumber | BigInt | number | string" default="0">
+  The UTXO amount in wei. Can be 0 for dummy UTXOs used to pad transactions.
+</ParamField>
+
+<ParamField path="keypair" type="Keypair" default="new Keypair()">
+  The keypair that owns this UTXO. If not provided, a random keypair is generated.
+</ParamField>
+
+<ParamField path="blinding" type="BigNumber | BigInt | number | string" default="randomBN()">
+  A random blinding factor used in commitment calculation. Auto-generated if not provided.
+</ParamField>
+
+<ParamField path="index" type="number | null" default="null">
+  The UTXO's position in the Merkle tree. Required for spending the UTXO.
+</ParamField>
+
+## Methods
+
+### getCommitment()
+
+Returns the commitment for this UTXO. The commitment is calculated using Poseidon hash of the amount, public key, and blinding factor.
+
+```javascript
+const commitment = utxo.getCommitment()
+// Returns: BigNumber
+```
+
+**Returns:** `BigNumber` - The commitment value
+
+<Note>
+  Commitments are cached after first calculation for performance.
+</Note>
+
+### getNullifier()
+
+Returns the nullifier for this UTXO. The nullifier is used to prevent double-spending.
+
+```javascript
+const nullifier = utxo.getNullifier()
+// Returns: BigNumber
+```
+
+**Returns:** `BigNumber` - The nullifier value
+
+**Throws:** Error if the UTXO has amount > 0 but missing index or private key
+
+<Note>
+  To compute a nullifier, the UTXO must have:
+  - A non-zero amount
+  - A valid index in the Merkle tree
+  - A keypair with a private key
+</Note>
+
+### encrypt()
+
+Encrypts the UTXO data (amount and blinding factor) using the keypair's encryption key.
+
+```javascript
+const encryptedData = utxo.encrypt()
+// Returns: '0x...'
+```
+
+**Returns:** `string` - Hex string with `0x` prefix containing encrypted data
+
+The encrypted data includes:
+- Amount (31 bytes)
+- Blinding factor (31 bytes)
+
+### decrypt() (static)
+
+Decrypts UTXO data and creates a new Utxo instance.
+
+```javascript
+const utxo = Utxo.decrypt(keypair, encryptedData, index)
+```
+
+**Parameters:**
+
+<ParamField path="keypair" type="Keypair" required>
+  The keypair used to decrypt the data
+</ParamField>
+
+<ParamField path="data" type="string" required>
+  Hex string with encrypted UTXO data
+</ParamField>
+
+<ParamField path="index" type="number" required>
+  The UTXO's index in the Merkle tree
+</ParamField>
+
+**Returns:** `Utxo` - A new Utxo instance with decrypted data
+
+## Example usage
+
+### Creating a deposit UTXO
+
+```javascript
+const { Utxo, Keypair } = require('tornado-nova-sdk')
+const { ethers } = require('hardhat')
+
+// Create keypair
+const keypair = new Keypair()
+
+// Create UTXO for 1 ETH deposit
+const depositUtxo = new Utxo({
+  amount: ethers.utils.parseEther('1.0'),
+  keypair: keypair
+})
+
+console.log('Commitment:', depositUtxo.getCommitment().toString())
+```
+
+### Creating dummy UTXOs
+
+Transactions require exactly 2 or 16 inputs and 2 outputs. Use dummy UTXOs with amount 0 to pad:
+
+```javascript
+// Create dummy UTXO (amount defaults to 0)
+const dummyUtxo = new Utxo()
+
+// Pad outputs array
+const outputs = [realUtxo, new Utxo()]
+```
+
+### Decrypting received UTXOs
+
+```javascript
+// Get encrypted output from transaction event
+const encryptedOutput = event.args.encryptedOutput1
+
+// Decrypt with your keypair
+const receivedUtxo = Utxo.decrypt(
+  myKeypair,
+  encryptedOutput,
+  utxoIndex
+)
+
+console.log('Received amount:', receivedUtxo.amount.toString())
+```
+
+### Spending a UTXO
+
+```javascript
+// UTXO must have index set to be spent
+inputUtxo.index = 5 // Set from Merkle tree
+
+try {
+  const nullifier = inputUtxo.getNullifier()
+  console.log('Nullifier:', nullifier.toString())
+} catch (error) {
+  console.error('Cannot spend UTXO:', error.message)
+}
+```
+
+## Properties
+
+After construction, a Utxo instance has these properties:
+
+- `amount` - BigNumber representing the UTXO amount
+- `blinding` - BigNumber representing the blinding factor
+- `keypair` - The Keypair that owns this UTXO
+- `index` - Number or null, the Merkle tree index
+
+## Related
+
+- [Keypair class](/sdk/keypair) - Key management
+- [Transactions](/sdk/transactions) - Using UTXOs in transactions

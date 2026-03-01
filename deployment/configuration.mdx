@@ -1,0 +1,396 @@
+---
+title: Deployment Configuration
+description: Configure network parameters, addresses, and deployment settings for Tornado Nova
+---
+
+Proper configuration is critical for successful deployment and operation of Tornado Nova. This guide covers all configuration parameters and their requirements.
+
+## Configuration Files
+
+### config.js
+
+The main configuration file containing network-specific addresses and parameters:
+
+```javascript config.js
+module.exports = {
+  //// L1 -------------------
+  // ETH
+  multisig: '0xb04E030140b30C27bcdfaafFFA98C57d80eDa7B4',
+  omniBridge: '0x88ad09518695c6c3712AC10a214bE5109a655671',
+  weth: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+  
+  // Deterministic deployment
+  singletonFactory: '0xce0042B868300000d44A59004Da54A005ffdcf9f',
+  salt: '0x0000000000000000000000000000000000000000000000000000000047941987',
+
+  //// L2 -------------------
+  // Gnosis chain
+  verifier2: '0xdf3a408c53e5078af6e8fb2a85088d46ee09a61b',
+  verifier16: '0x743494b60097a2230018079c02fe21a7b687eaa5',
+  MERKLE_TREE_HEIGHT: 23,
+  hasher: '0x94c92f096437ab9958fc0a37f09348f30389ae79',
+  gcWeth: '0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1',
+  gcOmniBridge: '0xf6a78083ca3e2a662d6dd1703c939c8ace2e268d',
+  l1Unwrapper: '0x3F615bA21Bc6Cc5D4a6D798c5950cc5c42937fbd',
+  govAddress: '0x5efda50f22d34f262c29268506c5fa42cb56a1ce',
+  l1ChainId: 1,
+  gcMultisig: '0x1f727de610030a88863d7da45bdea4eb84655b52',
+}
+```
+
+### hardhat.config.js
+
+Hardhat network configuration:
+
+```javascript hardhat.config.js
+require('@nomiclabs/hardhat-ethers')
+require('@nomiclabs/hardhat-waffle')
+require('@nomiclabs/hardhat-etherscan')
+require('dotenv').config()
+
+module.exports = {
+  solidity: {
+    compilers: [
+      { version: '0.7.6', settings: { optimizer: { enabled: true, runs: 200 } } },
+    ],
+  },
+  networks: {
+    mainnet: {
+      url: `https://eth-mainnet.alchemyapi.io/v2/${process.env.ALCHEMY_KEY}`,
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+    },
+    xdai: {
+      url: process.env.ETH_RPC || 'https://rpc.xdaichain.com/',
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      gasPrice: 25000000000,
+    },
+  },
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_KEY,
+  },
+}
+```
+
+### .env File
+
+Environment variables for sensitive data and deployment parameters:
+
+```bash .env
+# Network RPC
+ETH_RPC=https://rpc.xdaichain.com/
+ALCHEMY_KEY=your_alchemy_key
+
+# Deployment account
+PRIVATE_KEY=0x...
+
+# Pool limits
+MINIMUM_WITHDRAWAL_AMOUNT=0.5
+MAXIMUM_DEPOSIT_AMOUNT=100
+
+# Verification
+ETHERSCAN_KEY=your_etherscan_api_key
+```
+
+<Warning>
+Never commit the `.env` file to version control. Add it to `.gitignore` to prevent accidental exposure of private keys.
+</Warning>
+
+## Configuration Parameters
+
+### L1 Configuration
+
+#### multisig
+
+- **Type**: Address
+- **Description**: L1 multisig address for governance and emergency operations
+- **Required**: Yes
+- **Example**: `0xb04E030140b30C27bcdfaafFFA98C57d80eDa7B4`
+
+#### omniBridge
+
+- **Type**: Address
+- **Description**: OmniBridge contract address on L1 for cross-chain token transfers
+- **Required**: Yes
+- **Network-specific**: Ethereum mainnet and BSC have different addresses
+
+#### weth
+
+- **Type**: Address
+- **Description**: Wrapped native token address (WETH on Ethereum, WBNB on BSC)
+- **Required**: Yes
+- **Example**: `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` (WETH)
+
+#### singletonFactory
+
+- **Type**: Address
+- **Description**: CREATE2 factory for deterministic deployments
+- **Required**: Yes
+- **Default**: `0xce0042B868300000d44A59004Da54A005ffdcf9f`
+- **Note**: Should be same across all networks
+
+#### salt
+
+- **Type**: bytes32
+- **Description**: Salt value for CREATE2 deterministic address generation
+- **Required**: Yes
+- **Format**: 32-byte hex string with `0x` prefix
+- **Example**: `0x0000000000000000000000000000000000000000000000000000000047941987`
+
+<Note>
+Changing the salt will result in different contract addresses. Keep it consistent across deployments unless you need different addresses.
+</Note>
+
+### L2 Configuration
+
+#### verifier2 / verifier16
+
+- **Type**: Address
+- **Description**: ZK-SNARK verifier contract addresses
+- **Required**: Yes (must deploy before TornadoPool)
+- **verifier2**: Validates transactions with 2 input notes
+- **verifier16**: Validates transactions with 16 input notes
+
+#### MERKLE_TREE_HEIGHT
+
+- **Type**: uint32
+- **Description**: Height of the commitment Merkle tree
+- **Required**: Yes
+- **Default**: `23` (supports 2^23 = ~8.4M commitments)
+- **Range**: 10-32
+- **Warning**: Cannot be changed after deployment
+
+<Warning>
+The Merkle tree height determines the maximum number of deposits. Once set, it cannot be changed without deploying a new pool.
+</Warning>
+
+#### hasher
+
+- **Type**: Address
+- **Description**: Poseidon hash function contract address
+- **Required**: Yes (must compile and deploy before TornadoPool)
+- **Note**: Must be compiled via `npx hardhat hasher`
+
+#### gcWeth
+
+- **Type**: Address
+- **Description**: Wrapped token address on L2 (Gnosis Chain)
+- **Required**: Yes
+- **Example**: `0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1` (WETH on Gnosis)
+
+#### gcOmniBridge
+
+- **Type**: Address
+- **Description**: OmniBridge contract address on L2
+- **Required**: Yes
+- **Must match**: L1 omniBridge counterpart
+
+#### l1Unwrapper
+
+- **Type**: Address
+- **Description**: L1Unwrapper contract address from L1 deployment
+- **Required**: Yes
+- **Source**: Output from L1 deployment script
+- **Critical**: Must match the actual deployed L1Unwrapper address
+
+#### govAddress
+
+- **Type**: Address
+- **Description**: L1 governance contract address
+- **Required**: Yes
+- **Purpose**: Cross-chain admin for upgrades and configuration
+- **Security**: Must be a secure governance system or multisig
+
+#### l1ChainId
+
+- **Type**: uint256
+- **Description**: Chain ID of the L1 network
+- **Required**: Yes
+- **Examples**:
+  - `1` - Ethereum mainnet
+  - `56` - BSC
+  - `4` - Rinkeby (testnet)
+
+#### gcMultisig
+
+- **Type**: Address
+- **Description**: L2 multisig for emergency operations (not for upgrades)
+- **Required**: Yes
+- **Purpose**: Rescue tokens, configure limits
+- **Cannot**: Upgrade contracts (only L1 governance can)
+
+### Environment Variables
+
+#### MINIMUM_WITHDRAWAL_AMOUNT
+
+- **Type**: Number (in ETH)
+- **Description**: Minimum amount for withdrawals
+- **Required**: Yes (for initialization)
+- **Minimum**: `0.5` (enforced by MIN_EXT_AMOUNT_LIMIT in contract)
+- **Purpose**: Prevent dust withdrawals
+
+#### MAXIMUM_DEPOSIT_AMOUNT
+
+- **Type**: Number (in ETH)
+- **Description**: Maximum amount per deposit
+- **Required**: Yes (for initialization)
+- **Purpose**: Limit risk and comply with regulations
+- **Can be changed**: Yes, via `configureLimits()` governance call
+
+## Network-Specific Configurations
+
+<Tabs>
+  <Tab title="Ethereum ↔ Gnosis Chain">
+    ```javascript
+    // L1 (Ethereum Mainnet)
+    multisig: '0xb04E030140b30C27bcdfaafFFA98C57d80eDa7B4'
+    omniBridge: '0x88ad09518695c6c3712AC10a214bE5109a655671'
+    weth: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+    
+    // L2 (Gnosis Chain)
+    l1ChainId: 1
+    gcWeth: '0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1'
+    gcOmniBridge: '0xf6a78083ca3e2a662d6dd1703c939c8ace2e268d'
+    ```
+  </Tab>
+  <Tab title="BSC ↔ Gnosis Chain">
+    ```javascript
+    // L1 (BSC)
+    multisig: '0xBAE5aBfa98466Dbe68836763B087f2d189f4D28f'
+    omniBridge: '0xf0b456250dc9990662a6f25808cc74a6d1131ea9'
+    weth: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c' // WBNB
+    
+    // L2 (Gnosis Chain)
+    l1ChainId: 56
+    gcWeth: '0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1'
+    gcOmniBridge: '0xf6a78083ca3e2a662d6dd1703c939c8ace2e268d'
+    ```
+  </Tab>
+</Tabs>
+
+## Deterministic Address Generation
+
+The `0_generateAddresses.js` script calculates deterministic addresses:
+
+```javascript src/0_generateAddresses.js
+const { ethers } = require('hardhat')
+
+async function generate(config) {
+  const singletonFactory = await ethers.getContractAt(
+    'SingletonFactory',
+    config.singletonFactory
+  )
+
+  // Calculate L1Unwrapper address
+  const UnwrapperFactory = await ethers.getContractFactory('L1Unwrapper')
+  const deploymentBytecodeUnwrapper =
+    UnwrapperFactory.bytecode +
+    UnwrapperFactory.interface
+      .encodeDeploy([config.omniBridge, config.weth, config.multisig])
+      .slice(2)
+
+  const unwrapperAddress = ethers.utils.getCreate2Address(
+    singletonFactory.address,
+    config.salt,
+    ethers.utils.keccak256(deploymentBytecodeUnwrapper)
+  )
+
+  return { unwrapperContract: { address: unwrapperAddress } }
+}
+```
+
+### How CREATE2 Works
+
+CREATE2 address = keccak256(0xff ++ factory ++ salt ++ keccak256(bytecode))[12:]
+
+Components:
+- `0xff`: Constant prefix
+- `factory`: SingletonFactory address
+- `salt`: Configuration salt value
+- `bytecode`: Contract bytecode + encoded constructor arguments
+
+## Configuration Validation
+
+<Steps>
+  <Step title="Validate Addresses">
+    Ensure all addresses are valid Ethereum addresses:
+    
+    ```javascript
+    const { ethers } = require('ethers')
+    
+    function validateAddress(addr) {
+      return ethers.utils.isAddress(addr)
+    }
+    ```
+  </Step>
+
+  <Step title="Verify Contract Existence">
+    Check that referenced contracts exist on their respective networks:
+    
+    ```javascript
+    const code = await ethers.provider.getCode(address)
+    if (code === '0x') {
+      throw new Error('Contract does not exist')
+    }
+    ```
+  </Step>
+
+  <Step title="Confirm Bridge Compatibility">
+    Verify that L1 and L2 bridge addresses are counterparts:
+    
+    ```javascript
+    const l2Bridge = await ethers.getContractAt('IOmniBridge', l2BridgeAddr)
+    const foreignBridge = await l2Bridge.foreignBridge()
+    assert(foreignBridge === l1BridgeAddr)
+    ```
+  </Step>
+
+  <Step title="Check Chain IDs">
+    Confirm the correct chain IDs:
+    
+    ```javascript
+    const chainId = await ethers.provider.getNetwork().then(n => n.chainId)
+    assert(chainId === expectedChainId)
+    ```
+  </Step>
+</Steps>
+
+## Security Considerations
+
+<Warning>
+**Critical Security Checks:**
+
+1. **Governance Address**: Must be a secure multisig or governance contract
+2. **Multisig Addresses**: Use battle-tested multisig implementations (Gnosis Safe)
+3. **Bridge Addresses**: Verify official bridge contracts from documentation
+4. **Private Keys**: Never share or commit to version control
+5. **Salt Values**: Keep secret to prevent frontrunning deterministic deployments
+</Warning>
+
+### Recommended Multisig Setup
+
+- **L1 Governance**: Tornado Cash governance contract or 4-of-7 multisig
+- **L2 Multisig**: 3-of-5 multisig minimum
+- **Signers**: Geographically distributed, separate hardware wallets
+- **Update Policy**: Require time-locks for critical operations
+
+## Testing Configuration
+
+Before mainnet deployment, test on testnets:
+
+```javascript hardhat.config.js
+networks: {
+  rinkeby: {
+    url: `https://rinkeby.infura.io/v3/${process.env.INFURA_API_KEY}`,
+    accounts: [process.env.TESTNET_PRIVATE_KEY],
+  },
+  // Use same configuration structure as mainnet
+}
+```
+
+<Note>
+Test the complete deployment flow on testnet, including:
+- L1 deployment
+- L2 deployment
+- Cross-chain governance
+- Deposit and withdrawal operations
+</Note>

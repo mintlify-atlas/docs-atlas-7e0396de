@@ -1,0 +1,230 @@
+---
+title: Keypair class
+description: Documentation for the Keypair class that handles key generation, signing, and encryption
+---
+
+The `Keypair` class manages cryptographic keys for Tornado Nova transactions. Each keypair consists of a private key, public key, and encryption key.
+
+## Constructor
+
+Initialize a new keypair with an optional private key.
+
+```javascript
+const keypair = new Keypair()
+// Or with existing private key
+const keypair = new Keypair('0x1234...')
+```
+
+### Parameters
+
+<ParamField path="privkey" type="string" default="random">
+  A 32-byte hex string private key with `0x` prefix. If not provided, generates a random private key using ethers.Wallet.
+</ParamField>
+
+## Properties
+
+After construction, a Keypair instance has these properties:
+
+- `privkey` - The private key as a hex string
+- `pubkey` - Public key derived from Poseidon hash of private key (BigNumber)
+- `encryptionKey` - Base64-encoded encryption public key for encrypting UTXO data
+
+## Methods
+
+### toString()
+
+Returns the keypair address as a hex string.
+
+```javascript
+const address = keypair.toString()
+// Returns: '0x' + pubkey (64 chars) + encryptionKey (64 chars)
+```
+
+**Returns:** `string` - 128-character hex string (130 with `0x` prefix)
+
+The address format:
+- First 64 hex chars: public key
+- Last 64 hex chars: encryption key
+
+### address()
+
+Alias for `toString()`. Returns the keypair address.
+
+```javascript
+const address = keypair.address()
+```
+
+**Returns:** `string` - The keypair address
+
+### fromString() (static)
+
+Initializes a new keypair from an address string. Used to create a keypair for encryption without the private key.
+
+```javascript
+const recipientKeypair = Keypair.fromString(
+  '0x1234...abcd' // 130 or 128 character string
+)
+```
+
+**Parameters:**
+
+<ParamField path="str" type="string" required>
+  A 128-character hex string (or 130 with `0x` prefix) representing the keypair address
+</ParamField>
+
+**Returns:** `Keypair` - A new Keypair instance without a private key (privkey is null)
+
+**Throws:** Error if the string length is invalid
+
+<Note>
+  Keypairs created with `fromString()` cannot sign or decrypt data since they lack a private key. They can only be used for encryption.
+</Note>
+
+### sign()
+
+Sign a message using the keypair's private key.
+
+```javascript
+const signature = keypair.sign(commitment, merklePath)
+```
+
+**Parameters:**
+
+<ParamField path="commitment" type="string | number | BigNumber" required>
+  The UTXO commitment value
+</ParamField>
+
+<ParamField path="merklePath" type="string | number | BigNumber" required>
+  The Merkle tree path or index
+</ParamField>
+
+**Returns:** `BigNumber` - The signature computed using Poseidon hash
+
+The signature is calculated as: `poseidonHash([privkey, commitment, merklePath])`
+
+### encrypt()
+
+Encrypt data using the keypair's encryption key.
+
+```javascript
+const encrypted = keypair.encrypt(buffer)
+```
+
+**Parameters:**
+
+<ParamField path="bytes" type="Buffer" required>
+  A Buffer containing the data to encrypt
+</ParamField>
+
+**Returns:** `string` - Hex string with `0x` prefix containing encrypted data
+
+Uses the x25519-xsalsa20-poly1305 encryption scheme.
+
+### decrypt()
+
+Decrypt data using the keypair's private key.
+
+```javascript
+const decrypted = keypair.decrypt('0x...')
+```
+
+**Parameters:**
+
+<ParamField path="data" type="string" required>
+  A hex string (with or without `0x` prefix) containing encrypted data
+</ParamField>
+
+**Returns:** `Buffer` - A Buffer containing the decrypted data
+
+## Example usage
+
+### Generate a new keypair
+
+```javascript
+const { Keypair } = require('tornado-nova-sdk')
+
+// Generate random keypair
+const keypair = new Keypair()
+
+console.log('Address:', keypair.address())
+console.log('Public key:', keypair.pubkey.toString())
+```
+
+### Create keypair from existing private key
+
+```javascript
+const privkey = '0x1234567890abcdef...'
+const keypair = new Keypair(privkey)
+
+// Now you can sign and decrypt
+const signature = keypair.sign(commitment, 0)
+```
+
+### Share public address for receiving funds
+
+```javascript
+const senderKeypair = new Keypair()
+
+// Share this address with others
+const publicAddress = senderKeypair.address()
+console.log('Send funds to:', publicAddress)
+
+// Recipient can recreate keypair for encryption
+const recipientPubkey = Keypair.fromString(publicAddress)
+```
+
+### Encrypt and decrypt UTXO data
+
+```javascript
+const { Keypair } = require('tornado-nova-sdk')
+
+// Sender encrypts data
+const senderKeypair = new Keypair()
+const data = Buffer.from('secret message')
+const encrypted = senderKeypair.encrypt(data)
+
+// Receiver decrypts data
+const decrypted = senderKeypair.decrypt(encrypted)
+console.log(decrypted.toString()) // 'secret message'
+```
+
+### Sign a commitment
+
+```javascript
+const commitment = utxo.getCommitment()
+const index = 5
+
+const signature = keypair.sign(commitment, index)
+console.log('Signature:', signature.toString())
+```
+
+## Address format
+
+A Tornado Nova address is 130 characters (with `0x` prefix):
+
+```
+0x + [64 chars pubkey] + [64 chars encryption key]
+```
+
+Example:
+```
+0x1a2b3c4d...ef01 + 9a8b7c6d...fe10
+  ^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^
+  Public key        Encryption key
+```
+
+## Security considerations
+
+<Warning>
+  Never share your private key. Only share the address returned by `address()` or `toString()`.
+</Warning>
+
+- Store private keys securely
+- Use randomly generated keypairs for each transaction
+- The encryption key is derived from the private key and is safe to share
+- Keypairs without private keys (from `fromString()`) can only encrypt, not decrypt
+
+## Related
+
+- [Utxo class](/sdk/utxo) - UTXOs use keypairs for ownership
+- [Proof generation](/sdk/proof-generation) - Keypairs are used in proof generation

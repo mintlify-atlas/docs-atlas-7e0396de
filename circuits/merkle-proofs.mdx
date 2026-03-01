@@ -1,0 +1,266 @@
+---
+title: "Merkle Proof Circuits"
+description: "Zero-knowledge Merkle tree verification circuits for UTXO membership proofs"
+---
+
+## Overview
+
+Merkle proofs allow proving that a specific UTXO commitment exists in the Merkle tree without revealing which leaf position it occupies. This is crucial for privacy as it breaks the link between inputs and outputs.
+
+## MerkleProof Circuit
+
+The `MerkleProof` template verifies that a leaf is part of a Merkle tree with a given root:
+
+```circom merkleProof.circom
+template MerkleProof(levels) {
+    signal input leaf;              // The commitment to verify
+    signal input pathElements[levels]; // Sibling hashes along the path
+    signal input pathIndices;       // Binary encoding of the path
+    signal output root;             // Computed Merkle root
+}
+```
+
+### Parameters
+
+- `levels`: Depth of the Merkle tree (5 for Tornado Nova = 32 leaves)
+
+### Inputs
+
+- `leaf`: The UTXO commitment to prove membership for
+- `pathElements[levels]`: Array of sibling hashes from leaf to root
+- `pathIndices`: Bit-encoded path (0 = left, 1 = right) as a single number
+
+### Output
+
+- `root`: The computed Merkle root (must match the expected root)
+
+## Circuit Implementation
+
+### Path Decoding
+
+The circuit first converts the path indices into individual bits:
+
+```circom
+component indexBits = Num2Bits(levels);
+indexBits.in <== pathIndices;
+```
+
+This allows the circuit to determine at each level whether the current node is on the left or right.
+
+### Tree Traversal
+
+For each level of the tree, the circuit:
+
+<Steps>
+  <Step title="Switch Node Positions">
+    Use the path bit to determine if the current hash should be on the left or right:
+    ```circom
+    switcher[i] = Switcher();
+    switcher[i].L <== i == 0 ? leaf : hasher[i - 1].out;
+    switcher[i].R <== pathElements[i];
+    switcher[i].sel <== indexBits.out[i];
+    ```
+    
+    The `Switcher` component:
+    - If `sel = 0`: `outL = L, outR = R` (current node is on left)
+    - If `sel = 1`: `outL = R, outR = L` (current node is on right)
+  </Step>
+  
+  <Step title="Compute Parent Hash">
+    Hash the ordered pair to get the parent node:
+    ```circom
+    hasher[i] = Poseidon(2);
+    hasher[i].inputs[0] <== switcher[i].outL;
+    hasher[i].inputs[1] <== switcher[i].outR;
+    ```
+  </Step>
+  
+  <Step title="Move Up the Tree">
+    The output becomes the input for the next level, repeating until reaching the root.
+  </Step>
+</Steps>
+
+### Root Output
+
+After traversing all levels, the final hash is the Merkle root:
+
+```circom
+root <== hasher[levels - 1].out;
+```
+
+## Example Verification
+
+Consider a tree with 3 levels (8 leaves):
+
+```
+         root
+        /    \
+      h12    h34
+      / \    / \
+    h1  h2 h3  h4
+    /\  /\ /\ /\
+   L0L1L2L3L4L5L6L7
+```
+
+To prove `L2` exists:
+
+1. **Inputs**:
+   - `leaf = L2`
+   - `pathElements = [L3, h1, h34]`
+   - `pathIndices = 0b010 = 2` (binary: right, left, left)
+
+2. **Level 0**: Hash `(L2, L3)` → `h2`
+3. **Level 1**: Hash `(h1, h2)` → `h12`
+4. **Level 2**: Hash `(h12, h34)` → `root`
+
+<Note>
+The prover must know the correct path elements and indices. The circuit only verifies the proof is valid.
+</Note>
+
+## MerkleTree Circuit
+
+Tornado Nova also includes a helper circuit for building complete Merkle trees from leaf arrays:
+
+```circom merkleTree.circom
+template MerkleTree(levels) {
+  signal input leaves[1 << levels];  // 2^levels leaves
+  signal output root;
+}
+```
+
+This is primarily used for testing and off-chain computations, not in the main transaction proofs.
+
+### TreeLayer Helper
+
+Computes one layer of the tree:
+
+```circom
+template TreeLayer(height) {
+  var nItems = 1 << height;
+  signal input ins[nItems * 2];   // Child nodes
+  signal output outs[nItems];     // Parent nodes
+  
+  // Hash pairs of children
+  component hash[nItems];
+  for(var i = 0; i < nItems; i++) {
+    hash[i] = Poseidon(2);
+    hash[i].inputs[0] <== ins[i * 2];
+    hash[i].inputs[1] <== ins[i * 2 + 1];
+    hash[i].out ==> outs[i];
+  }
+}
+```
+
+### Building the Tree
+
+The `MerkleTree` circuit iterates from leaves to root:
+
+```circom
+component layers[levels];
+for(var level = levels - 1; level >= 0; level--) {
+  layers[level] = TreeLayer(level);
+  for(var i = 0; i < (1 << (level + 1)); i++) {
+    // Connect layers
+    layers[level].ins[i] <== level == levels - 1 
+      ? leaves[i]                    // Leaf layer
+      : layers[level + 1].outs[i];   // Parent layer
+  }
+}
+
+root <== levels > 0 ? layers[0].outs[0] : leaves[0];
+```
+
+## Integration with Transaction Circuit
+
+In the main transaction circuit, Merkle proofs verify each input UTXO:
+
+```circom
+// Create proof verifier
+inTree[tx] = MerkleProof(levels);
+inTree[tx].leaf <== inCommitmentHasher[tx].out;
+inTree[tx].pathIndices <== inPathIndices[tx];
+for (var i = 0; i < levels; i++) {
+    inTree[tx].pathElements[i] <== inPathElements[tx][i];
+}
+
+// Check root matches (only if amount > 0)
+inCheckRoot[tx] = ForceEqualIfEnabled();
+inCheckRoot[tx].in[0] <== root;  // Expected root (public input)
+inCheckRoot[tx].in[1] <== inTree[tx].root;  // Computed root
+inCheckRoot[tx].enabled <== inAmount[tx];  // Skip check for zero-amount UTXOs
+```
+
+<Warning>
+Zero-amount UTXOs skip Merkle proof verification because they don't need to exist in the tree. This optimization reduces constraint count for dummy inputs.
+</Warning>
+
+## Poseidon Hash Function
+
+All Merkle tree operations use the Poseidon hash function:
+
+- **ZK-friendly**: Optimized for arithmetic circuits
+- **Efficient**: Fewer constraints than SHA-256 or Keccak
+- **Secure**: 128-bit security level
+- **Inputs**: 2 field elements for parent hashing
+
+```circom
+component hasher = Poseidon(2);
+hasher.inputs[0] <== leftChild;
+hasher.inputs[1] <== rightChild;
+parent <== hasher.out;
+```
+
+## Security Properties
+
+### Soundness
+
+It is computationally infeasible to:
+- Prove a leaf exists when it doesn't
+- Forge a valid path for an invalid commitment
+- Find collisions in the Poseidon hash function
+
+### Privacy
+
+- The Merkle proof reveals nothing about the leaf position
+- All leaves in the anonymity set are equally likely
+- Path indices are private inputs (not revealed on-chain)
+- Only the root is public
+
+### Completeness
+
+- Any valid leaf in the tree can be proven
+- Proof size is logarithmic: `O(log n)` for `n` leaves
+- Verification is efficient: `O(levels)` operations
+
+## Tree Parameters
+
+Tornado Nova uses the following Merkle tree configuration:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Levels | 5 | Tree depth |
+| Capacity | 32 leaves | 2^5 UTXOs |
+| Path Size | 5 hashes | Proof components per input |
+| Zero Leaf | `Poseidon(zero, zero)` | Default value for empty positions |
+
+<Note>
+The zero leaf value (`11850551329423159860688778991827824730037759162201783566284850822760196767874`) is computed as `Poseidon(zero, zero)` where `zero = keccak256("tornado") % FIELD_SIZE`.
+</Note>
+
+## Performance Impact
+
+Each Merkle proof verification adds:
+
+- **Constraints**: ~400 per proof (5 levels × ~80 per hash)
+- **Proving time**: ~0.2s per proof
+- **Circuit size**: Scales with number of inputs
+
+For Transaction16 with 16 inputs:
+- **Total Merkle constraints**: ~6,400 (16 × 400)
+- **Percentage of circuit**: ~10-15% of total constraints
+
+## Next Steps
+
+<Card title="Transaction Circuits" icon="code-branch" href="/circuits/transaction-circuits">
+  See how Merkle proofs integrate into the full transaction circuit
+</Card>

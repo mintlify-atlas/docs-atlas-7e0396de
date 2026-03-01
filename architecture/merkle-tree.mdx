@@ -1,0 +1,268 @@
+---
+title: Merkle tree implementation
+description: How Tornado Nova tracks commitments using an optimized Poseidon-based Merkle tree
+---
+
+Tornado Nova uses a Merkle tree to track all UTXO commitments. This data structure enables efficient membership proofs while maintaining a compact representation on-chain. The implementation uses Poseidon hashing for zero-knowledge circuit efficiency.
+
+## Tree structure
+
+The Merkle tree is implemented in the `MerkleTreeWithHistory` contract:
+
+```solidity contracts/MerkleTreeWithHistory.sol
+contract MerkleTreeWithHistory is Initializable {
+    uint256 public constant FIELD_SIZE = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+    uint256 public constant ZERO_VALUE = 21663839004416932945382355908790599225266501822907911457504978515578255421292;
+
+    IHasher public immutable hasher;
+    uint32 public immutable levels;
+
+    mapping(uint256 => bytes32) public filledSubtrees;
+    mapping(uint256 => bytes32) public roots;
+    uint32 public constant ROOT_HISTORY_SIZE = 100;
+    uint32 public currentRootIndex = 0;
+    uint32 public nextIndex = 0;
+}
+```
+
+<Note>
+The tree uses mappings instead of arrays for `filledSubtrees` and `roots` to save gas by removing index range checks on every access.
+</Note>
+
+## Key parameters
+
+<Steps>
+  <Step title="Tree depth (levels)">
+    Configured at deployment, typically 32. Determines maximum capacity: 2^32 = 4.3 billion commitments.
+  </Step>
+  
+  <Step title="Field size">
+    The prime field order for Baby Jubjub curve and Poseidon hash. All values must be less than this.
+  </Step>
+  
+  <Step title="Zero value">
+    Computed as `keccak256("tornado") % FIELD_SIZE`, used for empty tree positions.
+  </Step>
+  
+  <Step title="Root history">
+    Maintains the last 100 roots to allow transactions to reference recent tree states.
+  </Step>
+</Steps>
+
+## Poseidon hashing
+
+The tree uses Poseidon instead of keccak256 for SNARK-friendliness:
+
+```solidity contracts/MerkleTreeWithHistory.sol
+function hashLeftRight(bytes32 _left, bytes32 _right) public view returns (bytes32) {
+    require(uint256(_left) < FIELD_SIZE, "_left should be inside the field");
+    require(uint256(_right) < FIELD_SIZE, "_right should be inside the field");
+    bytes32[2] memory input;
+    input[0] = _left;
+    input[1] = _right;
+    return hasher.poseidon(input);
+}
+```
+
+This function:
+1. Validates both inputs are valid field elements
+2. Calls the external Poseidon hasher contract
+3. Returns the hash used for the parent node
+
+<Warning>
+All tree values must be less than FIELD_SIZE. Values outside this range will cause the transaction to revert.
+</Warning>
+
+## Tree initialization
+
+The tree is initialized with pre-computed zero values for each level:
+
+```solidity contracts/MerkleTreeWithHistory.sol
+function _initialize() internal {
+    for (uint32 i = 0; i < levels; i++) {
+        filledSubtrees[i] = zeros(i);
+    }
+
+    roots[0] = zeros(levels);
+}
+```
+
+The `zeros` function returns pre-computed hashes of empty subtrees:
+
+```solidity contracts/MerkleTreeWithHistory.sol
+function zeros(uint256 i) public pure returns (bytes32) {
+    if (i == 0) return bytes32(0x2fe54c60d3acabf3343a35b6eba15db4821b340f76e741e2249685ed4899af6c);
+    else if (i == 1) return bytes32(0x1a332ca2cd2436bdc6796e6e4244ebf6f7e359868b7252e55342f766e4088082);
+    else if (i == 2) return bytes32(0x2fb19ac27499bdf9d7d3b387eff42b6d12bffbc6206e81d0ef0b0d6b24520ebd);
+    // ... up to level 32
+}
+```
+
+These values represent:
+- Level 0: Hash of two ZERO_VALUE leaves
+- Level 1: Hash of two level-0 zero subtrees
+- Level N: Hash of two level-(N-1) zero subtrees
+
+## Pair insertion optimization
+
+Tornado Nova inserts two commitments at once for better efficiency:
+
+```solidity contracts/MerkleTreeWithHistory.sol
+function _insert(bytes32 _leaf1, bytes32 _leaf2) internal returns (uint32 index) {
+    uint32 _nextIndex = nextIndex;
+    require(_nextIndex != uint32(2)**levels, "Merkle tree is full. No more leaves can be added");
+    uint32 currentIndex = _nextIndex / 2;
+    bytes32 currentLevelHash = hashLeftRight(_leaf1, _leaf2);
+    bytes32 left;
+    bytes32 right;
+
+    for (uint32 i = 1; i < levels; i++) {
+        if (currentIndex % 2 == 0) {
+            left = currentLevelHash;
+            right = zeros(i);
+            filledSubtrees[i] = currentLevelHash;
+        } else {
+            left = filledSubtrees[i];
+            right = currentLevelHash;
+        }
+        currentLevelHash = hashLeftRight(left, right);
+        currentIndex /= 2;
+    }
+
+    uint32 newRootIndex = (currentRootIndex + 1) % ROOT_HISTORY_SIZE;
+    currentRootIndex = newRootIndex;
+    roots[newRootIndex] = currentLevelHash;
+    nextIndex = _nextIndex + 2;
+    return _nextIndex;
+}
+```
+
+This algorithm:
+1. Hashes the two new leaves together to form their parent
+2. Walks up the tree, computing parent hashes at each level
+3. Updates `filledSubtrees` to track the rightmost node at each level
+4. Stores the new root in the circular root history buffer
+5. Increments `nextIndex` by 2
+
+<Note>
+Inserting pairs halves the number of on-chain operations compared to inserting leaves individually, significantly reducing gas costs.
+</Note>
+
+## Root history
+
+The contract maintains a circular buffer of recent roots:
+
+```solidity contracts/MerkleTreeWithHistory.sol
+function isKnownRoot(bytes32 _root) public view returns (bool) {
+    if (_root == 0) {
+        return false;
+    }
+    uint32 _currentRootIndex = currentRootIndex;
+    uint32 i = _currentRootIndex;
+    do {
+        if (_root == roots[i]) {
+            return true;
+        }
+        if (i == 0) {
+            i = ROOT_HISTORY_SIZE;
+        }
+        i--;
+    } while (i != _currentRootIndex);
+    return false;
+}
+```
+
+This allows transactions to reference any of the last 100 tree states. The mechanism enables:
+
+- **Concurrent transactions**: Multiple users can create proofs against the same root simultaneously
+- **Front-running protection**: Transactions remain valid even if other transactions modify the tree
+- **Time buffer**: Users have time to submit transactions before their root expires
+
+<Warning>
+Transactions using roots older than 100 insertions will be rejected. If the tree sees heavy usage, roots can expire quickly.
+</Warning>
+
+## Transaction integration
+
+The `TornadoPool` contract inherits from `MerkleTreeWithHistory` and uses it during transaction processing:
+
+```solidity contracts/TornadoPool.sol
+function _transact(Proof memory _args, ExtData memory _extData) internal nonReentrant {
+    require(isKnownRoot(_args.root), "Invalid merkle root");
+    // ... nullifier checks and proof verification
+
+    _insert(_args.outputCommitments[0], _args.outputCommitments[1]);
+    emit NewCommitment(_args.outputCommitments[0], nextIndex - 2, _extData.encryptedOutput1);
+    emit NewCommitment(_args.outputCommitments[1], nextIndex - 1, _extData.encryptedOutput2);
+}
+```
+
+The flow:
+1. Verify the claimed root is in the last 100 roots
+2. Verify input commitments exist at that root (via zero-knowledge proof)
+3. Insert new output commitments
+4. Emit events with encrypted UTXO data for recipients
+
+## Merkle proof generation
+
+Clients must generate Merkle proofs off-chain to create transactions. For each input UTXO:
+
+1. Locate the commitment's index in the tree
+2. Collect sibling hashes along the path from leaf to root
+3. Include these as `inPathElements` in the circuit inputs
+
+The circuit verifies the proof:
+
+```circom circuits/transaction.circom
+inTree[tx] = MerkleProof(levels);
+inTree[tx].leaf <== inCommitmentHasher[tx].out;
+inTree[tx].pathIndices <== inPathIndices[tx];
+for (var i = 0; i < levels; i++) {
+    inTree[tx].pathElements[i] <== inPathElements[tx][i];
+}
+```
+
+The `MerkleProof` circuit template (from circomlib) computes the root by repeatedly hashing:
+
+```
+root = hashLeftRight(
+    pathElements[level],
+    currentHash,
+    pathIndices[level]
+)
+```
+
+## Commitment tracking
+
+The contract emits events when commitments are inserted:
+
+```solidity contracts/TornadoPool.sol
+event NewCommitment(bytes32 commitment, uint256 index, bytes encryptedOutput);
+```
+
+Clients must:
+1. Listen for `NewCommitment` events
+2. Maintain a local copy of the tree
+3. Update the tree with each new commitment
+4. Store Merkle paths for owned commitments
+
+This off-chain tracking is necessary because:
+- The contract only stores `filledSubtrees` and recent roots, not individual commitments
+- Merkle paths are needed to create transactions spending UTXOs
+- Reconstructing the full tree from events is required for new clients
+
+<Note>
+The tree is append-only. Commitments are never removed, only marked as spent via their nullifiers. This ensures Merkle paths remain valid for the root history window.
+</Note>
+
+## Gas optimization
+
+Several optimizations reduce on-chain costs:
+
+1. **Pair insertion**: Halves the number of tree updates
+2. **Mappings over arrays**: Removes bounds checking
+3. **Minimal storage**: Only stores `filledSubtrees`, not full tree
+4. **Immutable parameters**: Tree depth and hasher address
+5. **Circular root buffer**: Fixed-size history with O(1) updates
+
+A typical 2-input transaction costs approximately 400,000-600,000 gas, with tree operations being a significant portion.

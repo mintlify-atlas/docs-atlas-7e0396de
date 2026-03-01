@@ -1,0 +1,242 @@
+---
+title: "L1Unwrapper Contract API"
+description: "Reference for the L1Unwrapper contract - handles ETH unwrapping and account registration on L1"
+---
+
+## Overview
+
+The L1Unwrapper contract is an extension of the WETHOmnibridgeRouter that facilitates ETH deposits to the TornadoPool on L2 and handles withdrawals back to L1. It manages the wrapping/unwrapping of ETH to WETH for bridge compatibility and stores TornadoPool account registrations.
+
+**Contract Location:** `contracts/bridge/L1Unwrapper.sol`
+
+## State Variables
+
+<ResponseField name="l1FeeReceiver" type="address payable">
+  Address that receives L1 execution fees. If set to zero address, fees go to tx.origin. Can be changed by the multisig to implement fee sharing logic.
+</ResponseField>
+
+## Constructor
+
+```solidity
+constructor(
+  IOmnibridge _bridge,
+  IWETH _weth,
+  address _owner
+)
+```
+
+<ParamField path="_bridge" type="IOmnibridge" required>
+  OmniBridge contract address
+</ParamField>
+
+<ParamField path="_weth" type="IWETH" required>
+  Wrapped ETH (WETH) contract address
+</ParamField>
+
+<ParamField path="_owner" type="address" required>
+  Owner address for contract governance
+</ParamField>
+
+**Inherits from:** `WETHOmnibridgeRouter(_bridge, _weth, _owner)`
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:37`
+
+## Public Functions
+
+### register
+
+```solidity
+function register(Account memory _account) public
+```
+
+Registers a user's public key for the TornadoPool. This allows the user to receive shielded transfers.
+
+<ParamField path="_account" type="Account" required>
+  Account structure containing owner address and public key bytes
+</ParamField>
+
+**Requirements:**
+- Account owner must be msg.sender
+
+**Emits:** `PublicKey(address indexed owner, bytes key)`
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:46`
+
+---
+
+### wrapAndRelayTokens
+
+```solidity
+function wrapAndRelayTokens(
+  address _receiver,
+  bytes memory _data,
+  Account memory _account
+) public payable
+```
+
+Wraps native ETH to WETH and bridges it to L2, optionally registering an account in a single transaction. This is the main entry point for deposits from L1.
+
+<ParamField path="_receiver" type="address" required>
+  Receiver address on L2 (typically the TornadoPool contract)
+</ParamField>
+
+<ParamField path="_data" type="bytes" required>
+  Encoded data to pass to the receiver on L2 (contains Proof and ExtData)
+</ParamField>
+
+<ParamField path="_account" type="Account" required>
+  TornadoPool account data for registration. If account.owner == msg.sender, registration will occur.
+</ParamField>
+
+**Process:**
+1. Wraps msg.value ETH to WETH
+2. Calls bridge.relayTokensAndCall() to send WETH and data to L2
+3. If _account.owner matches msg.sender, registers the account
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:58`
+
+---
+
+### onTokenBridged
+
+```solidity
+function onTokenBridged(
+  address _token,
+  uint256 _value,
+  bytes memory _data
+) external override
+```
+
+Callback function invoked by OmniBridge when tokens are bridged from L2 to L1. Unwraps WETH to ETH and distributes to recipient with fee handling.
+
+<ParamField path="_token" type="address" required>
+  Bridged token address (must be WETH)
+</ParamField>
+
+<ParamField path="_value" type="uint256" required>
+  Amount of tokens bridged
+</ParamField>
+
+<ParamField path="_data" type="bytes" required>
+  Extra data containing recipient address and L1 fee (must be exactly 64 bytes)
+</ParamField>
+
+**Requirements:**
+- Token must be WETH
+- Only callable by bridge contract
+- Data length must be exactly 64 bytes
+
+**Process:**
+1. Withdraws WETH to native ETH
+2. Decodes recipient address and l1Fee from _data
+3. Sends (value - l1Fee) to recipient
+4. Sends l1Fee to l1FeeReceiver or tx.origin if l1FeeReceiver is zero address
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:83`
+
+---
+
+### setL1FeeReceiver
+
+```solidity
+function setL1FeeReceiver(address payable _receiver) external
+```
+
+Sets the L1 fee receiver address. Only contract owner can call this method.
+
+<ParamField path="_receiver" type="address payable" required>
+  Address of the new L1 fee receiver. Set to address(0) for native tx.origin receiver.
+</ParamField>
+
+**Requirements:**
+- Only callable by contract owner
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:109`
+
+## Data Structures
+
+### Account
+
+```solidity
+struct Account {
+  address owner;
+  bytes publicKey;
+}
+```
+
+<ResponseField name="owner" type="address">
+  Ethereum address of the account owner
+</ResponseField>
+
+<ResponseField name="publicKey" type="bytes">
+  Public key bytes for encryption and receiving shielded transfers (64 bytes: 32 bytes pubkey + 32 bytes encryption key)
+</ResponseField>
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:32`
+
+## Events
+
+### PublicKey
+
+```solidity
+event PublicKey(address indexed owner, bytes key)
+```
+
+Emitted when a user registers their public key.
+
+<ResponseField name="owner" type="address" indexed>
+  Address of the account owner
+</ResponseField>
+
+<ResponseField name="key" type="bytes">
+  Public key bytes registered
+</ResponseField>
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:30`
+
+## Usage Example
+
+<CodeGroup>
+```javascript Deposit from L1
+const account = {
+  owner: userAddress,
+  publicKey: keypair.toString() // 64 bytes hex
+}
+
+const { args, extData } = await prepareTransaction({
+  tornadoPool,
+  outputs: [utxo1, utxo2],
+  // ... other params
+})
+
+const data = ethers.utils.defaultAbiCoder.encode(
+  ['tuple(bytes proof, bytes32 root, bytes32[] inputNullifiers, bytes32[2] outputCommitments, uint256 publicAmount, bytes32 extDataHash)', 'tuple(address recipient, int256 extAmount, address relayer, uint256 fee, bytes encryptedOutput1, bytes encryptedOutput2, bool isL1Withdrawal, uint256 l1Fee)'],
+  [args, extData]
+)
+
+await l1Unwrapper.wrapAndRelayTokens(
+  tornadoPoolAddress,
+  data,
+  account,
+  { value: ethers.utils.parseEther('1.0') }
+)
+```
+
+```javascript Register Only
+const account = {
+  owner: await signer.getAddress(),
+  publicKey: keypair.toString()
+}
+
+await l1Unwrapper.register(account)
+```
+</CodeGroup>
+
+## Inherited Functions
+
+L1Unwrapper inherits from `WETHOmnibridgeRouter`, which provides:
+- Bridge wrapping/unwrapping utilities
+- Owner access control via `onlyOwner` modifier
+- Safe ETH transfer helpers via `AddressHelper.safeSendValue`
+
+See the OmniBridge documentation for additional inherited functionality.

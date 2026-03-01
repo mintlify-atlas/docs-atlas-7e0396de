@@ -1,0 +1,297 @@
+---
+title: Account Registration
+description: Register accounts with public keys for receiving encrypted UTXOs in Tornado Nova
+---
+
+## Overview
+
+Account registration associates a user's address with their public encryption key. This allows other users to send shielded transfers by encrypting output UTXOs with the recipient's public key.
+
+## Why Register?
+
+Registration enables:
+- **Receiving transfers**: Others can encrypt UTXOs for you
+- **Key discovery**: Public keys are published on-chain
+- **Identity verification**: Links addresses to encryption keys
+
+<Note>
+  Registration is optional but required to receive shielded transfers from other users.
+</Note>
+
+## Account Structure
+
+Accounts consist of an owner address and public key:
+
+```solidity contracts/TornadoPool.sol
+struct Account {
+  address owner;
+  bytes publicKey;
+}
+```
+
+## Registration Function
+
+The contract provides a simple registration mechanism:
+
+```solidity contracts/TornadoPool.sol
+function register(Account memory _account) public {
+  require(_account.owner == msg.sender, "only owner can be registered");
+  _register(_account);
+}
+
+function _register(Account memory _account) internal {
+  emit PublicKey(_account.owner, _account.publicKey);
+}
+```
+
+<Warning>
+  Only the account owner can register their own public key. The `msg.sender` must match `_account.owner`.
+</Warning>
+
+## PublicKey Event
+
+Registration emits an event containing the public key:
+
+```solidity contracts/TornadoPool.sol
+event PublicKey(address indexed owner, bytes key);
+```
+
+Applications can query this event to discover public keys:
+
+```javascript
+const filter = tornadoPool.filters.PublicKey(ownerAddress);
+const events = await tornadoPool.queryFilter(filter);
+const publicKey = events[events.length - 1].args.key;
+```
+
+## Register and Transact
+
+Users can register and transact in a single call:
+
+```solidity contracts/TornadoPool.sol
+function registerAndTransact(
+  Account memory _account,
+  Proof memory _proofArgs,
+  ExtData memory _extData
+) public {
+  register(_account);
+  transact(_proofArgs, _extData);
+}
+```
+
+This is useful for first-time users making their initial deposit:
+
+```javascript src/index.js
+async function registerAndTransact({ tornadoPool, account, ...rest }) {
+  const { args, extData } = await prepareTransaction({
+    tornadoPool,
+    ...rest,
+  })
+
+  const receipt = await tornadoPool.registerAndTransact(account, args, extData, {
+    gasLimit: 2e6,
+  })
+  await receipt.wait()
+}
+```
+
+<Note>
+  `registerAndTransact` allows new users to register and deposit in a single transaction.
+</Note>
+
+## Key Generation
+
+Public keys are derived from keypairs in the UTXO system:
+
+```javascript src/utxo.js
+const { Keypair } = require('./keypair')
+
+class Utxo {
+  constructor({ amount = 0, keypair = new Keypair(), blinding = randomBN(), index = null } = {}) {
+    this.amount = BigNumber.from(amount)
+    this.blinding = BigNumber.from(blinding)
+    this.keypair = keypair
+    this.index = index
+  }
+}
+```
+
+The keypair includes:
+- **Private key**: Used to decrypt incoming UTXOs and sign transactions
+- **Public key**: Published during registration for others to encrypt UTXOs
+
+## Encryption with Public Keys
+
+When creating outputs for a registered recipient:
+
+```javascript src/utxo.js
+encrypt() {
+  const bytes = Buffer.concat([toBuffer(this.amount, 31), toBuffer(this.blinding, 31)])
+  return this.keypair.encrypt(bytes)
+}
+```
+
+The encrypted output is included in the transaction:
+
+```javascript src/index.js
+const extData = {
+  recipient: toFixedHex(recipient, 20),
+  extAmount: toFixedHex(extAmount),
+  relayer: toFixedHex(relayer, 20),
+  fee: toFixedHex(fee),
+  encryptedOutput1: outputs[0].encrypt(),
+  encryptedOutput2: outputs[1].encrypt(),
+  isL1Withdrawal,
+  l1Fee,
+}
+```
+
+## Decryption with Private Keys
+
+Recipients decrypt UTXOs using their private key:
+
+```javascript src/utxo.js
+static decrypt(keypair, data, index) {
+  const buf = keypair.decrypt(data)
+  return new Utxo({
+    amount: BigNumber.from('0x' + buf.slice(0, 31).toString('hex')),
+    blinding: BigNumber.from('0x' + buf.slice(31, 62).toString('hex')),
+    keypair,
+    index,
+  })
+}
+```
+
+<Steps>
+  <Step title="Scan NewCommitment events">
+    Monitor the blockchain for `NewCommitment` events containing encrypted outputs.
+  </Step>
+  
+  <Step title="Attempt decryption">
+    Try decrypting each `encryptedOutput` with your private key.
+  </Step>
+  
+  <Step title="Store successful UTXOs">
+    If decryption succeeds, store the UTXO with its commitment index.
+  </Step>
+  
+  <Step title="Track nullifiers">
+    Monitor for `NewNullifier` events to detect when UTXOs are spent.
+  </Step>
+</Steps>
+
+## Commitment Structure
+
+UTXO commitments include the public key:
+
+```javascript src/utxo.js
+getCommitment() {
+  if (!this._commitment) {
+    this._commitment = poseidonHash([this.amount, this.keypair.pubkey, this.blinding])
+  }
+  return this._commitment
+}
+```
+
+<Note>
+  The commitment cryptographically binds the UTXO to the recipient's public key, ensuring only the key owner can spend it.
+</Note>
+
+## Registration Best Practices
+
+### When to Register
+
+- **Before receiving transfers**: Register to publish your public key
+- **On first deposit**: Use `registerAndTransact` for efficiency
+- **After key rotation**: Re-register if you change keypairs
+
+### Security Considerations
+
+<Warning>
+  - Keep private keys secure and never share them
+  - Public keys can be published without risk
+  - Losing your private key means losing access to UTXOs
+  - Consider backup strategies for key recovery
+</Warning>
+
+## Discovering Recipients
+
+To send to a registered user:
+
+```javascript
+// 1. Query their PublicKey event
+const filter = tornadoPool.filters.PublicKey(recipientAddress);
+const events = await tornadoPool.queryFilter(filter);
+if (events.length === 0) {
+  throw new Error('Recipient has not registered');
+}
+const publicKeyBytes = events[events.length - 1].args.key;
+
+// 2. Create keypair from public key
+const recipientKeypair = Keypair.fromPublicKey(publicKeyBytes);
+
+// 3. Create output UTXO for recipient
+const outputUtxo = new Utxo({
+  amount: transferAmount,
+  keypair: recipientKeypair
+});
+
+// 4. Encrypt output with recipient's key
+const encryptedOutput = outputUtxo.encrypt();
+```
+
+## Multiple Registrations
+
+Users can register multiple times with different keys:
+
+```javascript
+// First registration
+await tornadoPool.register({
+  owner: userAddress,
+  publicKey: keypair1.publicKey
+});
+
+// Later, register a new key
+await tornadoPool.register({
+  owner: userAddress,
+  publicKey: keypair2.publicKey
+});
+```
+
+<Note>
+  Use the most recent `PublicKey` event to find the current public key for a user.
+</Note>
+
+## Off-Chain Key Distribution
+
+While registration publishes keys on-chain, keys can also be shared off-chain:
+
+- **Direct communication**: Share public keys via secure channels
+- **Key servers**: Publish to centralized or decentralized key directories
+- **ENS records**: Store public keys in ENS text records
+
+<Warning>
+  Always verify the authenticity of off-chain public keys to prevent man-in-the-middle attacks.
+</Warning>
+
+## Registration Costs
+
+Registration is a simple event emission:
+
+```solidity contracts/TornadoPool.sol
+emit PublicKey(_account.owner, _account.publicKey);
+```
+
+Gas costs are minimal (approximately 20,000-30,000 gas), making registration affordable.
+
+## Privacy Implications
+
+Registration creates an on-chain link:
+
+- **Address ↔ Public Key**: Anyone can see which addresses registered which keys
+- **Transfer privacy**: Actual transfers remain private despite registration
+- **Anonymity sets**: Consider using fresh addresses for sensitive operations
+
+<Note>
+  Registration reveals the association between your address and public key, but does not reveal your transaction history or balances.
+</Note>

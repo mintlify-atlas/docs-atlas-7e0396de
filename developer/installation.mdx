@@ -1,0 +1,145 @@
+---
+title: 'Installation'
+description: 'Install Tornado Nova and set up your development environment'
+---
+
+## Prerequisites
+
+Before installing Tornado Nova, ensure you have the following installed:
+
+- Node.js (v14 or higher)
+- Yarn package manager
+- Git
+
+## Installation Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the Tornado Pool repository to your local machine:
+
+    ```bash
+    git clone https://github.com/tornadocash/tornado-pool.git
+    cd tornado-pool
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Install all required dependencies using Yarn:
+
+    ```bash
+    yarn
+    ```
+
+    This will install all packages specified in `package.json`, including:
+    - Hardhat and related plugins
+    - Circom and circomlib for zero-knowledge circuits
+    - Ethers.js for blockchain interactions
+    - OpenZeppelin contracts
+  </Step>
+
+  <Step title="Download circuit files">
+    Download the required trusted setup files:
+
+    ```bash
+    yarn download
+    ```
+
+    This downloads the powers of tau ceremony files needed for circuit compilation.
+  </Step>
+
+  <Step title="Build the project">
+    Build circuits and compile contracts:
+
+    ```bash
+    yarn build
+    ```
+
+    This command will:
+    - Build zero-knowledge circuits for transaction proofs
+    - Compile all Solidity smart contracts
+    - Generate TypeScript typings
+  </Step>
+</Steps>
+
+## Verify Installation
+
+To verify your installation is successful, run the test suite:
+
+```bash
+yarn test
+```
+
+<Note>
+  The test suite may take several minutes to complete as it involves zero-knowledge proof generation and smart contract testing.
+</Note>
+
+## Project Structure
+
+After installation, your project structure will look like this:
+
+```
+tornado-pool/
+├── artifacts/          # Compiled contracts and circuits
+├── circuits/           # Zero-knowledge circuit definitions
+├── contracts/          # Solidity smart contracts
+├── scripts/            # Deployment and utility scripts
+├── src/                # TypeScript source files
+├── test/               # Test files
+├── config.js           # Configuration file
+├── hardhat.config.js   # Hardhat configuration
+└── package.json        # Project dependencies
+```
+
+## Available Commands
+
+<CodeGroup>
+```bash Compilation
+# Compile contracts only
+yarn compile
+
+# Compile Poseidon hasher
+yarn compile:hasher
+```
+
+```bash Circuit Building
+# Build circuits for development
+yarn circuit
+
+# Build circuits for production
+yarn circuit_prod
+```
+
+```bash Testing & Linting
+# Run all tests
+yarn test
+
+# Run ESLint
+yarn eslint
+
+# Check code formatting
+yarn prettier:check
+
+# Fix code formatting
+yarn prettier:fix
+
+# Run all linters
+yarn lint
+```
+
+```bash Deployment
+# Deploy to Optimism
+yarn deploy
+```
+</CodeGroup>
+
+## Next Steps
+
+After installation, you'll need to:
+
+1. Configure your environment variables (see [Configuration](/developer/configuration))
+2. Build the zero-knowledge circuits (see [Building Circuits](/developer/building-circuits))
+3. Set up network configurations for deployment
+
+<Warning>
+  Never commit your `.env` file containing private keys or API keys to version control.
+</Warning>

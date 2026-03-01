@@ -1,0 +1,288 @@
+---
+title: Proof generation
+description: Learn how to generate zero-knowledge proofs for Tornado Nova transactions
+---
+
+Tornado Nova uses zero-knowledge proofs to enable private transactions. The SDK provides the `prove()` function to generate Groth16 proofs using snarkjs.
+
+## Overview
+
+Proof generation is the core of Tornado Nova's privacy. It proves that:
+
+1. You own the input UTXOs (know the private keys)
+2. The input UTXOs exist in the Merkle tree
+3. The transaction is balanced (inputs = outputs + fees)
+4. All commitments and nullifiers are computed correctly
+
+All of this without revealing which UTXOs you're spending or who is receiving funds.
+
+## prove() function
+
+Generates a zero-knowledge proof using circuit artifacts.
+
+```javascript
+const { prove } = require('tornado-nova-sdk')
+
+const proof = await prove(input, keyBasePath)
+```
+
+### Parameters
+
+<ParamField path="input" type="object" required>
+  The circuit input object containing all public and private inputs for the proof
+</ParamField>
+
+<ParamField path="keyBasePath" type="string" required>
+  Path to the circuit artifacts without extension. For example, `'./artifacts/circuits/transaction2'` will use:
+  - `transaction2.wasm` (WebAssembly circuit)
+  - `transaction2.zkey` (proving key)
+</ParamField>
+
+### Returns
+
+**Type:** `Promise<string>`
+
+**Value:** A hex string proof in the format:
+```
+0x + pi_a[0] + pi_a[1] + pi_b[0][1] + pi_b[0][0] + pi_b[1][1] + pi_b[1][0] + pi_c[0] + pi_c[1]
+```
+
+This format is compatible with Solidity verifier contracts.
+
+## Circuit input structure
+
+The input object contains both public and private data:
+
+```javascript
+const input = {
+  // Public inputs
+  root: '0x1234...', // Merkle tree root
+  inputNullifier: ['0x...', '0x...'], // Nullifiers for inputs
+  outputCommitment: ['0x...', '0x...'], // Commitments for outputs
+  publicAmount: '1000000000000000000', // Net amount change
+  extDataHash: '0x...', // Hash of external data
+
+  // Private inputs - Input UTXOs
+  inAmount: ['1000000000000000000', '0'],
+  inPrivateKey: ['0x...', '0x...'],
+  inBlinding: ['0x...', '0x...'],
+  inPathIndices: [5, 0],
+  inPathElements: [[...], [...]],
+
+  // Private inputs - Output UTXOs
+  outAmount: ['500000000000000000', '500000000000000000'],
+  outBlinding: ['0x...', '0x...'],
+  outPubkey: ['0x...', '0x...']
+}
+```
+
+### Input fields
+
+<ParamField path="root" type="string" required>
+  The Merkle tree root at the time of transaction
+</ParamField>
+
+<ParamField path="inputNullifier" type="string[]" required>
+  Array of nullifiers for input UTXOs (length 2 or 16)
+</ParamField>
+
+<ParamField path="outputCommitment" type="string[]" required>
+  Array of commitments for output UTXOs (length 2)
+</ParamField>
+
+<ParamField path="publicAmount" type="string" required>
+  The net amount deposited or withdrawn: `(extAmount - fee + FIELD_SIZE) % FIELD_SIZE`
+</ParamField>
+
+<ParamField path="extDataHash" type="string" required>
+  Hash of the external data (recipient, relayer, encrypted outputs, etc.)
+</ParamField>
+
+<ParamField path="inAmount" type="string[]" required>
+  Amounts of input UTXOs
+</ParamField>
+
+<ParamField path="inPrivateKey" type="string[]" required>
+  Private keys for input UTXOs
+</ParamField>
+
+<ParamField path="inBlinding" type="string[]" required>
+  Blinding factors for input UTXOs
+</ParamField>
+
+<ParamField path="inPathIndices" type="number[]" required>
+  Merkle tree indices for input UTXOs
+</ParamField>
+
+<ParamField path="inPathElements" type="string[][]" required>
+  Merkle tree path elements for input UTXOs
+</ParamField>
+
+<ParamField path="outAmount" type="string[]" required>
+  Amounts for output UTXOs
+</ParamField>
+
+<ParamField path="outBlinding" type="string[]" required>
+  Blinding factors for output UTXOs
+</ParamField>
+
+<ParamField path="outPubkey" type="string[]" required>
+  Public keys for output UTXO recipients
+</ParamField>
+
+## Example usage
+
+### Basic proof generation
+
+```javascript
+const { prove } = require('tornado-nova-sdk')
+
+// Prepare circuit input
+const input = {
+  root: tree.root(),
+  inputNullifier: inputs.map(x => x.getNullifier()),
+  outputCommitment: outputs.map(x => x.getCommitment()),
+  publicAmount: '1000000000000000000',
+  extDataHash: getExtDataHash(extData),
+  inAmount: inputs.map(x => x.amount),
+  inPrivateKey: inputs.map(x => x.keypair.privkey),
+  inBlinding: inputs.map(x => x.blinding),
+  inPathIndices: inputMerklePathIndices,
+  inPathElements: inputMerklePathElements,
+  outAmount: outputs.map(x => x.amount),
+  outBlinding: outputs.map(x => x.blinding),
+  outPubkey: outputs.map(x => x.keypair.pubkey)
+}
+
+// Generate proof
+const proof = await prove(input, './artifacts/circuits/transaction2')
+console.log('Proof:', proof)
+```
+
+### Using with transactions
+
+The SDK's transaction functions handle proof generation automatically:
+
+```javascript
+const { transaction } = require('tornado-nova-sdk')
+
+// Proof generation happens internally
+const receipt = await transaction({
+  tornadoPool,
+  inputs: [inputUtxo],
+  outputs: [outputUtxo1, outputUtxo2],
+  fee: ethers.utils.parseEther('0.01'),
+  recipient: recipientAddress,
+  relayer: relayerAddress
+})
+```
+
+## Circuit types
+
+Tornado Nova supports different circuit sizes:
+
+### Transaction2 circuit
+
+For transactions with 2 inputs:
+
+```javascript
+const proof = await prove(input, './artifacts/circuits/transaction2')
+```
+
+### Transaction16 circuit
+
+For transactions with up to 16 inputs:
+
+```javascript
+const proof = await prove(input, './artifacts/circuits/transaction16')
+```
+
+<Note>
+  The SDK automatically selects the correct circuit based on the number of inputs.
+</Note>
+
+## Performance considerations
+
+### Proof generation time
+
+- **Transaction2**: ~2-5 seconds
+- **Transaction16**: ~10-30 seconds
+
+Generation time depends on:
+- Circuit size
+- Hardware (CPU speed)
+- Available memory
+
+### Optimization tips
+
+<Tabs>
+  <Tab title="Node.js">
+    ```javascript
+    // Use worker threads for parallel proof generation
+    const { Worker } = require('worker_threads')
+
+    function proveAsync(input, keyBasePath) {
+      return new Promise((resolve, reject) => {
+        const worker = new Worker('./prover-worker.js')
+        worker.postMessage({ input, keyBasePath })
+        worker.on('message', resolve)
+        worker.on('error', reject)
+      })
+    }
+    ```
+  </Tab>
+  <Tab title="Browser">
+    ```javascript
+    // Use Web Workers in browser
+    const worker = new Worker('prover-worker.js')
+    
+    worker.postMessage({ input, keyBasePath })
+    worker.onmessage = (e) => {
+      const proof = e.data
+      console.log('Proof generated:', proof)
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Debugging
+
+If proof generation fails, check:
+
+1. **Circuit artifacts exist**: Ensure `.wasm` and `.zkey` files are present
+2. **Input format**: All values should be strings or BigNumbers
+3. **Array lengths**: Inputs and outputs must match circuit size
+4. **Merkle paths**: Ensure paths are valid for the given tree
+
+```javascript
+const { utils } = require('ffjavascript')
+
+// Debug input values
+console.log('Input:', utils.stringifyBigInts(input))
+
+try {
+  const proof = await prove(input, keyBasePath)
+  console.log('Success:', proof)
+} catch (error) {
+  console.error('Proof generation failed:', error.message)
+}
+```
+
+## Alternative: proveZkutil()
+
+The SDK also provides `proveZkutil()` for using zkutil instead of snarkjs:
+
+```javascript
+const { proveZkutil } = require('tornado-nova-sdk')
+
+const proof = await proveZkutil(input, keyBasePath)
+```
+
+<Note>
+  `proveZkutil()` requires zkutil binary to be installed and additional circuit artifacts (`.r1cs`, `.params` files).
+</Note>
+
+## Related
+
+- [Transactions](/sdk/transactions) - Transactions use proofs internally
+- [Utxo class](/sdk/utxo) - UTXOs provide data for proofs

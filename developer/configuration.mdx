@@ -1,0 +1,327 @@
+---
+title: 'Configuration'
+description: 'Configure Tornado Nova for different networks and environments'
+---
+
+## Environment Variables
+
+Tornado Nova uses environment variables for sensitive configuration. Create a `.env` file in the project root based on `.env.example`:
+
+```bash .env
+PRIVATE_KEY=your_private_key_here
+ETH_RPC=https://eth-mainnet.alchemyapi.io/v2/your_key
+XDAI_RPC=https://rpc.gnosischain.com
+BSC_RPC=https://bsc-dataseed.binance.org/
+MINIMUM_WITHDRAWAL_AMOUNT=0.05
+MAXIMUM_DEPOSIT_AMOUNT=1
+ALCHEMY_KEY=your_alchemy_api_key
+INFURA_API_KEY=your_infura_api_key
+ETHERSCAN_KEY=your_etherscan_api_key
+```
+
+<Warning>
+  Never commit your `.env` file to version control. It contains sensitive private keys and API credentials.
+</Warning>
+
+### Environment Variable Descriptions
+
+<CodeGroup>
+```bash Network Configuration
+# Private key for deployment and transactions
+PRIVATE_KEY=
+
+# RPC endpoints for different networks
+ETH_RPC=https://
+XDAI_RPC=https://
+BSC_RPC=https://
+```
+
+```bash Pool Limits
+# Minimum withdrawal amount from pool to L1 (in ETH)
+# Prevents spam attacks on the bridge
+MINIMUM_WITHDRAWAL_AMOUNT=0.05
+
+# Maximum deposit amount per transaction (in ETH)
+# Beta version limitation, can be increased by governance
+MAXIMUM_DEPOSIT_AMOUNT=1
+```
+
+```bash API Keys
+# Alchemy API key for Ethereum mainnet
+ALCHEMY_KEY=
+
+# Infura API key for various networks
+INFURA_API_KEY=
+
+# Etherscan API key for contract verification
+ETHERSCAN_KEY=
+```
+</CodeGroup>
+
+## Hardhat Configuration
+
+The `hardhat.config.js` file configures network connections, compiler settings, and plugins.
+
+### Solidity Compiler Settings
+
+```javascript hardhat.config.js
+solidity: {
+  compilers: [
+    {
+      version: '0.4.24',
+      settings: {
+        optimizer: {
+          enabled: true,
+          runs: 200,
+        },
+      },
+    },
+    {
+      version: '0.6.2',
+      settings: {
+        optimizer: {
+          enabled: true,
+          runs: 200,
+        },
+      },
+    },
+    {
+      version: '0.7.5',
+      settings: {
+        optimizer: {
+          enabled: true,
+          runs: 200,
+        },
+      },
+    },
+    {
+      version: '0.7.6',
+      settings: {
+        optimizer: {
+          enabled: true,
+          runs: 200,
+        },
+      },
+    },
+  ],
+},
+```
+
+<Note>
+  Multiple compiler versions are configured to support different contract dependencies.
+</Note>
+
+### Network Configuration
+
+<CodeGroup>
+```javascript Hardhat (Local)
+networks: {
+  hardhat: {
+    forking: {
+      url: `https://eth-mainnet.alchemyapi.io/v2/${process.env.ALCHEMY_KEY}`,
+      blockNumber: 13685625,
+    },
+    chainId: 1,
+    initialBaseFeePerGas: 5,
+    loggingEnabled: false,
+    allowUnlimitedContractSize: false,
+    blockGasLimit: 50000000,
+  },
+}
+```
+
+```javascript Ethereum Mainnet
+mainnet: {
+  url: `https://eth-mainnet.alchemyapi.io/v2/${process.env.ALCHEMY_KEY}`,
+  accounts: process.env.PRIVATE_KEY
+    ? [process.env.PRIVATE_KEY]
+    : {
+        mnemonic: 'test test test test test test test test test test test junk',
+      },
+}
+```
+
+```javascript Gnosis Chain (xDai)
+xdai: {
+  url: process.env.ETH_RPC || 'https://rpc.xdaichain.com/',
+  accounts: process.env.PRIVATE_KEY
+    ? [process.env.PRIVATE_KEY]
+    : {
+        mnemonic: 'test test test test test test test test test test test junk',
+      },
+  gasPrice: 25000000000,
+}
+```
+
+```javascript Binance Smart Chain
+bsc: {
+  url: process.env.ETH_RPC || 'https://bsc-dataseed.binance.org/',
+  accounts: process.env.PRIVATE_KEY
+    ? [process.env.PRIVATE_KEY]
+    : {
+        mnemonic: 'test test test test test test test test test test test junk',
+      },
+}
+```
+
+```javascript Rinkeby (Testnet)
+rinkeby: {
+  url: `https://rinkeby.infura.io/v3/${process.env.INFURA_API_KEY}`,
+  accounts: process.env.PRIVATE_KEY
+    ? [process.env.PRIVATE_KEY]
+    : {
+        mnemonic: 'test test test test test test test test test test test junk',
+      },
+}
+```
+</CodeGroup>
+
+### Additional Settings
+
+```javascript hardhat.config.js
+config = {
+  // ... networks and compiler config
+  
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_KEY,
+  },
+  
+  mocha: {
+    timeout: 600000000, // 10 minutes for ZK proof tests
+  },
+  
+  typechain: {
+    outDir: 'src/types', // TypeScript type generation
+  },
+}
+```
+
+## Application Configuration
+
+The `config.js` file contains deployment addresses and protocol parameters:
+
+### Layer 1 Configuration (Ethereum Mainnet)
+
+```javascript config.js
+module.exports = {
+  // L1 Configuration
+  multisig: '0xb04E030140b30C27bcdfaafFFA98C57d80eDa7B4',
+  omniBridge: '0x88ad09518695c6c3712AC10a214bE5109a655671',
+  weth: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+  singletonFactory: '0xce0042B868300000d44A59004Da54A005ffdcf9f',
+  salt: '0x0000000000000000000000000000000000000000000000000000000047941987',
+}
+```
+
+<Note>
+  The `salt` value is used for deterministic contract deployment via CREATE2.
+</Note>
+
+### Layer 2 Configuration (Gnosis Chain)
+
+```javascript config.js
+module.exports = {
+  // L2 Configuration (Gnosis Chain)
+  verifier2: '0xdf3a408c53e5078af6e8fb2a85088d46ee09a61b',
+  verifier16: '0x743494b60097a2230018079c02fe21a7b687eaa5',
+  MERKLE_TREE_HEIGHT: 23,
+  hasher: '0x94c92f096437ab9958fc0a37f09348f30389ae79',
+  gcWeth: '0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1',
+  gcOmniBridge: '0xf6a78083ca3e2a662d6dd1703c939c8ace2e268d',
+  l1Unwrapper: '0x3F615bA21Bc6Cc5D4a6D798c5950cc5c42937fbd',
+  govAddress: '0x5efda50f22d34f262c29268506c5fa42cb56a1ce',
+  l1ChainId: 1,
+  gcMultisig: '0x1f727de610030a88863d7da45bdea4eb84655b52',
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `verifier2` | Address of Transaction2 verifier contract |
+| `verifier16` | Address of Transaction16 verifier contract |
+| `MERKLE_TREE_HEIGHT` | Maximum tree depth (23 = 8.3M deposits) |
+| `hasher` | Poseidon hash function contract address |
+| `gcWeth` | Wrapped ETH token on Gnosis Chain |
+| `gcOmniBridge` | Bridge contract for L1↔L2 communication |
+| `l1Unwrapper` | L1 contract for unwrapping deposits |
+| `govAddress` | Tornado Cash governance address |
+| `l1ChainId` | Ethereum mainnet chain ID (1) |
+
+## Network-Specific Notes
+
+### Ethereum Mainnet
+
+- Used for L1 operations and governance
+- Requires ALCHEMY_KEY for RPC access
+- Higher gas costs - optimize transaction batching
+
+### Gnosis Chain (formerly xDai)
+
+- Primary network for Tornado Pool operations
+- Lower gas costs (fixed at 25 Gwei)
+- Bridge connection to Ethereum mainnet
+- Fast block times (~5 seconds)
+
+### Binance Smart Chain
+
+- Alternative L1 configuration available
+- Requires updating bridge and token addresses in config.js
+- Commented out by default
+
+## Deployment Configuration
+
+To verify expected contract addresses with current config:
+
+```bash
+yarn compile
+node -e 'require("./src/0_generateAddresses").generateWithLog()'
+```
+
+Expected addresses with salt `0x0000000000000000000000000000000000000000000000000000000047941987`:
+
+- **L1Unwrapper**: `0x3F615bA21Bc6Cc5D4a6D798c5950cc5c42937fbd`
+- **TornadoPool**: `0x0CDD3705aF7979fBe80A64288Ebf8A9Fe1151cE1`
+
+## Running Different Networks
+
+<CodeGroup>
+```bash Deploy to Mainnet
+npx hardhat run scripts/deployL1Unwrapper.js --network mainnet
+```
+
+```bash Deploy to Gnosis Chain
+npx hardhat run scripts/deployTornadoUpgrade.js --network xdai
+```
+
+```bash Deploy to Optimism
+yarn deploy
+```
+
+```bash Test with Mainnet Fork
+# Uses hardhat network with mainnet forking
+npx hardhat test
+```
+</CodeGroup>
+
+<Warning>
+  Always test deployment scripts on testnets (e.g., Rinkeby) before deploying to mainnet.
+</Warning>
+
+## Verifying Contracts
+
+After deployment, verify contracts on Etherscan:
+
+```bash
+npx hardhat verify --network mainnet <CONTRACT_ADDRESS>
+```
+
+Ensure `ETHERSCAN_KEY` is set in your `.env` file.
+
+## Next Steps
+
+- Review [Installation](/developer/installation) if you haven't set up the project
+- Build circuits following [Building Circuits](/developer/building-circuits)
+- Run tests to verify configuration: `yarn test`
+- Deploy contracts using the configured networks

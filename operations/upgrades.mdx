@@ -1,0 +1,500 @@
+---
+title: Contract Upgrades
+description: Upgrade TornadoPool implementation contracts via cross-chain governance and proxies
+---
+
+Tornado Nova uses the TransparentUpgradeableProxy pattern combined with cross-chain governance to enable secure contract upgrades without disrupting user funds or changing the proxy address.
+
+## Upgrade Architecture
+
+The upgrade system uses OpenZeppelin's TransparentUpgradeableProxy with custom cross-chain admin verification:
+
+```solidity contracts/CrossChainUpgradeableProxy.sol
+contract CrossChainUpgradeableProxy is 
+  TransparentUpgradeableProxy,
+  CrossChainGuard 
+{
+  modifier ifAdmin() override {
+    if (isCalledByOwner()) {
+      _; // Execute admin function
+    } else {
+      _fallback(); // Delegate to implementation
+    }
+  }
+}
+```
+
+### Key Components
+
+- **Proxy Contract**: Fixed address, routes calls to implementation
+- **Implementation Contract**: Contains logic, can be upgraded
+- **Cross-Chain Admin**: L1 governance controls upgrades via AMB bridge
+- **Storage**: Stored in proxy, preserved across upgrades
+
+<Note>
+The proxy address never changes. Users always interact with the same proxy address, even after upgrades.
+</Note>
+
+## Upgrade Process
+
+### 1. Deploy New Implementation
+
+<Steps>
+  <Step title="Prepare New Implementation">
+    Develop and test the new TornadoPool implementation:
+
+    ```solidity contracts/TornadoPoolV2.sol
+    contract TornadoPoolV2 is TornadoPool {
+      // Preserve storage layout
+      // Add new functionality
+      // Fix bugs
+    }
+    ```
+
+    **Critical**: Maintain storage layout compatibility.
+  </Step>
+
+  <Step title="Deploy to L2">
+    Deploy the new implementation using CREATE2 for deterministic addresses:
+
+    ```bash
+    npx hardhat run scripts/deployTornadoUpgrade.js --network xdai
+    ```
+
+    The script uses the same salt and constructor args for consistent addressing:
+
+    ```javascript
+    const { generate } = require('./src/0_generateAddresses')
+    const contracts = await generate(config)
+    
+    const newImplementation = contracts.poolContract.address
+    console.log('New implementation:', newImplementation)
+    ```
+  </Step>
+
+  <Step title="Verify Implementation">
+    Verify the deployed implementation on block explorer:
+
+    ```bash
+    npx hardhat verify --network xdai <IMPLEMENTATION_ADDRESS> \
+      <VERIFIER2> <VERIFIER16> 23 <HASHER> <TOKEN> \
+      <OMNIBRIDGE> <L1_UNWRAPPER> <GOVERNANCE> 1 <MULTISIG>
+    ```
+  </Step>
+
+  <Step title="Audit New Code">
+    Before proceeding, ensure:
+
+    - Code has been audited by reputable security firm
+    - Storage layout is compatible
+    - All tests pass
+    - Deployment tested on testnet
+  </Step>
+</Steps>
+
+### 2. Create Governance Proposal
+
+<Steps>
+  <Step title="Encode Upgrade Call">
+    Encode the `upgradeTo()` function call:
+
+    ```javascript
+    const ProxyAdmin = await ethers.getContractFactory(
+      'CrossChainUpgradeableProxy'
+    )
+    
+    const upgradeCalldata = ProxyAdmin.interface.encodeFunctionData(
+      'upgradeTo',
+      [newImplementationAddress]
+    )
+    
+    console.log('Upgrade calldata:', upgradeCalldata)
+    ```
+  </Step>
+
+  <Step title="Encode AMB Bridge Call">
+    Wrap the upgrade call in an AMB bridge message:
+
+    ```javascript
+    const ambCalldata = ethers.utils.defaultAbiCoder.encode(
+      ['address', 'bytes', 'uint256'],
+      [
+        proxyAddress,        // Target: L2 proxy
+        upgradeCalldata,     // Data: upgradeTo(address)
+        1000000,            // Gas: 1M for L2 execution
+      ]
+    )
+    ```
+  </Step>
+
+  <Step title="Create Proposal">
+    Submit governance proposal on L1:
+
+    ```javascript
+    const governance = await ethers.getContractAt(
+      'TornadoGovernance',
+      govAddress
+    )
+    
+    await governance.propose(
+      [ambBridge.address],                              // targets
+      [0],                                              // values
+      ['requireToPassMessage(address,bytes,uint256)'],  // signatures
+      [ambCalldata],                                    // calldatas
+      'Upgrade TornadoPool to V2: [describe changes]'  // description
+    )
+    ```
+  </Step>
+
+  <Step title="Document Proposal">
+    Create detailed proposal documentation:
+
+    - Summary of changes
+    - Security audit report
+    - Testing results
+    - Expected impact
+    - Rollback plan
+  </Step>
+</Steps>
+
+### 3. Execute Upgrade
+
+<Steps>
+  <Step title="Voting Period">
+    Wait for governance voting period:
+
+    - Proposal announcement: 1-3 days
+    - Voting period: 3-7 days
+    - Discussion and review by community
+  </Step>
+
+  <Step title="Execute Proposal">
+    After voting passes, execute via governance:
+
+    ```javascript
+    await governance.execute(proposalId)
+    ```
+
+    This calls the AMB bridge to relay the message to L2.
+  </Step>
+
+  <Step title="Monitor Bridge Relay">
+    Track the message relay across the bridge:
+
+    ```javascript
+    const amb = await ethers.getContractAt('IAMB', ambBridge.address)
+    
+    amb.on('MessagePassed', (messageId) => {
+      console.log('Message sent to L2:', messageId)
+    })
+    
+    // On L2
+    const ambL2 = await ethers.getContractAt('IAMB', ambBridgeL2.address)
+    
+    ambL2.on('MessageExecuted', (messageId, status) => {
+      console.log('Message executed on L2:', messageId, status)
+    })
+    ```
+
+    Bridge relay typically takes 5-15 minutes depending on validator response.
+  </Step>
+
+  <Step title="Verify Upgrade">
+    Confirm the upgrade was successful:
+
+    ```javascript
+    const proxy = await ethers.getContractAt(
+      'CrossChainUpgradeableProxy',
+      proxyAddress
+    )
+    
+    const currentImpl = await proxy.implementation()
+    console.log('Current implementation:', currentImpl)
+    console.log('Expected implementation:', newImplementationAddress)
+    
+    assert(currentImpl === newImplementationAddress, 'Upgrade failed')
+    ```
+  </Step>
+</Steps>
+
+## Storage Layout Compatibility
+
+Maintaining storage layout compatibility is critical for safe upgrades.
+
+### Current Storage Layout
+
+From contracts/TornadoPool.sol:37-40:
+
+```solidity
+contract TornadoPool is MerkleTreeWithHistory, IERC20Receiver, ReentrancyGuard, CrossChainGuard {
+  // ... immutable variables ...
+  
+  uint256 public lastBalance;
+  uint256 public __gap;               // Storage padding
+  uint256 public maximumDepositAmount;
+  mapping(bytes32 => bool) public nullifierHashes;
+  
+  // ...
+}
+```
+
+### Inherited Storage
+
+Storage layout includes inherited contracts:
+
+```solidity
+MerkleTreeWithHistory:
+  - uint32 public levels
+  - uint256 public nextIndex
+  - mapping(uint256 => bytes32) public filledSubtrees
+  - mapping(uint256 => bytes32) public roots
+  - uint256 public currentRootIndex
+
+ReentrancyGuard:
+  - uint256 private _status
+
+CrossChainGuard:
+  - (immutable variables don't use storage slots)
+```
+
+### Safe Storage Changes
+
+<Tabs>
+  <Tab title="✅ Safe">
+    ```solidity
+    // Append new variables at the end
+    contract TornadoPoolV2 is TornadoPool {
+      uint256 public lastBalance;
+      uint256 public __gap;
+      uint256 public maximumDepositAmount;
+      mapping(bytes32 => bool) public nullifierHashes;
+      
+      // New variables appended
+      uint256 public newFeature;
+      address public newAddress;
+    }
+    
+    // Use gap for new variables
+    contract TornadoPoolV2 is TornadoPool {
+      uint256 public lastBalance;
+      uint256 public newVariable;  // Uses __gap slot
+      uint256 public maximumDepositAmount;
+      mapping(bytes32 => bool) public nullifierHashes;
+    }
+    ```
+  </Tab>
+  <Tab title="❌ Unsafe">
+    ```solidity
+    // Reorder variables
+    contract TornadoPoolV2 is TornadoPool {
+      uint256 public maximumDepositAmount;  // WRONG ORDER!
+      uint256 public lastBalance;
+      uint256 public __gap;
+      mapping(bytes32 => bool) public nullifierHashes;
+    }
+    
+    // Change variable types
+    contract TornadoPoolV2 is TornadoPool {
+      uint256 public lastBalance;
+      address public __gap;  // WRONG TYPE!
+      uint256 public maximumDepositAmount;
+      mapping(bytes32 => bool) public nullifierHashes;
+    }
+    
+    // Insert variables in the middle
+    contract TornadoPoolV2 is TornadoPool {
+      uint256 public lastBalance;
+      uint256 public newVariable;  // Breaks storage!
+      uint256 public __gap;
+      uint256 public maximumDepositAmount;
+      mapping(bytes32 => bool) public nullifierHashes;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+**Storage Layout Rules:**
+
+1. Never change the order of existing variables
+2. Never change the type of existing variables
+3. Never delete existing variables
+4. Always append new variables at the end
+5. Use `__gap` slots for new variables if available
+6. Maintain inheritance order
+</Warning>
+
+## Testing Upgrades
+
+### Testnet Deployment
+
+Always test upgrades on testnet first:
+
+```bash
+# Deploy to Rinkeby (L1)
+PRIVATE_KEY=$TESTNET_KEY npx hardhat run scripts/deployL1Unwrapper.js --network rinkeby
+
+# Deploy to Sokol/xDai testnet (L2)
+PRIVATE_KEY=$TESTNET_KEY npx hardhat run scripts/deployTornado.js --network sokol
+
+# Test upgrade
+PRIVATE_KEY=$TESTNET_KEY npx hardhat run scripts/deployTornadoUpgrade.js --network sokol
+```
+
+### Upgrade Simulation
+
+Simulate the upgrade locally:
+
+```javascript
+const { ethers, upgrades } = require('hardhat')
+
+async function simulateUpgrade() {
+  // Get existing proxy
+  const proxy = await ethers.getContractAt('TornadoPool', proxyAddress)
+  
+  // Deploy new implementation
+  const TornadoPoolV2 = await ethers.getContractFactory('TornadoPoolV2')
+  const newImpl = await TornadoPoolV2.deploy(...constructorArgs)
+  
+  // Simulate upgrade (doesn't actually upgrade)
+  await upgrades.validateUpgrade(proxyAddress, TornadoPoolV2)
+  
+  console.log('Upgrade validation passed')
+  
+  // Test storage preservation
+  const oldMaxDeposit = await proxy.maximumDepositAmount()
+  
+  // Manually upgrade in test environment
+  await proxy.upgradeTo(newImpl.address)
+  
+  const newMaxDeposit = await proxy.maximumDepositAmount()
+  assert(oldMaxDeposit.eq(newMaxDeposit), 'Storage corrupted')
+  
+  console.log('Storage integrity verified')
+}
+```
+
+### Integration Testing
+
+Test complete user flows after upgrade:
+
+```javascript
+const tornadoPool = await ethers.getContractAt('TornadoPoolV2', proxyAddress)
+
+// Test deposit
+const depositTx = await tornadoPool.transact(depositProof, depositExtData)
+await depositTx.wait()
+
+// Test transfer
+const transferTx = await tornadoPool.transact(transferProof, transferExtData)
+await transferTx.wait()
+
+// Test withdrawal
+const withdrawTx = await tornadoPool.transact(withdrawProof, withdrawExtData)
+await withdrawTx.wait()
+
+console.log('All user flows working after upgrade')
+```
+
+## Rollback Plan
+
+Prepare a rollback strategy before upgrading:
+
+### Emergency Rollback
+
+If critical issues are discovered:
+
+```javascript
+// Create emergency governance proposal
+const rollbackCalldata = ProxyAdmin.interface.encodeFunctionData(
+  'upgradeTo',
+  [previousImplementationAddress] // Revert to old implementation
+)
+
+// Fast-track through governance or use multisig if available
+```
+
+### Pause Mechanism
+
+Consider adding a pause function in new implementations:
+
+```solidity
+contract TornadoPoolV2 is TornadoPool, Pausable {
+  function transact(Proof memory _args, ExtData memory _extData) 
+    public 
+    whenNotPaused 
+  {
+    super.transact(_args, _extData);
+  }
+  
+  function pause() external onlyMultisig {
+    _pause();
+  }
+}
+```
+
+<Note>
+The L2 multisig can pause immediately without waiting for cross-chain governance, providing rapid incident response.
+</Note>
+
+## Upgrade Security
+
+### Pre-Upgrade Checklist
+
+- [ ] Code audited by reputable security firm
+- [ ] Storage layout verified compatible
+- [ ] All tests passing (unit, integration, e2e)
+- [ ] Tested on testnet with real workflows
+- [ ] Community review completed
+- [ ] Documentation updated
+- [ ] Monitoring in place
+- [ ] Rollback plan prepared
+- [ ] Gas costs analyzed
+- [ ] Bridge relay tested
+
+### Post-Upgrade Monitoring
+
+Monitor the system closely after upgrade:
+
+```javascript
+// Monitor for anomalies
+const tornadoPool = await ethers.getContractAt('TornadoPoolV2', proxyAddress)
+
+// Check deposit rate
+tornadoPool.on('NewCommitment', () => {
+  console.log('Deposit detected')
+})
+
+// Check withdrawal rate
+tornadoPool.on('NewNullifier', () => {
+  console.log('Withdrawal detected')
+})
+
+// Monitor pool balance
+setInterval(async () => {
+  const balance = await token.balanceOf(proxyAddress)
+  console.log('Pool balance:', ethers.utils.formatEther(balance))
+}, 60000) // Every minute
+```
+
+### Common Upgrade Issues
+
+<Warning>
+**Watch out for:**
+
+1. **Storage corruption**: Variables reading wrong values
+2. **Function signature changes**: Breaking external integrations
+3. **Gas limit exceeded**: L2 execution fails due to insufficient gas
+4. **Bridge delay**: Message not relayed within expected timeframe
+5. **Initialization required**: New variables need initialization
+</Warning>
+
+## Upgrade Best Practices
+
+1. **Small incremental upgrades**: Easier to test and reason about
+2. **Comprehensive testing**: Cover all code paths and edge cases
+3. **Community involvement**: Give users time to review and comment
+4. **Gradual rollout**: Consider proxy pattern for staged rollouts
+5. **Documentation**: Keep upgrade history and rationale
+6. **Monitoring**: Watch for unexpected behavior post-upgrade
+7. **Rollback readiness**: Have plan to revert if needed

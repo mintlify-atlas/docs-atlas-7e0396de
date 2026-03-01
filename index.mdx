@@ -1,97 +1,114 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: Tornado Nova Documentation
+description: Privacy pool protocol with arbitrary deposit amounts and internal shielded transfers using zero-knowledge proofs
 ---
 
-## Setting up
+# Tornado Nova
 
-Get your documentation site up and running in minutes.
+Tornado Nova is an experimental privacy pool protocol that enables **arbitrary deposit amounts** and **internal shielded transfers** on Ethereum Layer 2. Built on zero-knowledge proofs and a UTXO model, Nova provides enhanced privacy while reducing transaction costs on Gnosis Chain (formerly xDai).
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn about Tornado Nova's features and capabilities
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="How it works" icon="shield-halved" href="/how-it-works">
+    Understand the privacy mechanisms and UTXO model
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Installation" icon="download" href="/developer/installation">
+    Get started with Tornado Nova development
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API reference" icon="code" href="/api/tornado-pool-api">
+    Explore the complete API documentation
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Key features
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Arbitrary amounts" icon="coins">
+    Deposit and withdraw any amount within configured limits, not just fixed denominations
+  </Card>
+  <Card title="Shielded transfers" icon="arrow-right-arrow-left">
+    Transfer funds privately between users inside the pool without L1 withdrawals
+  </Card>
+  <Card title="Zero-knowledge proofs" icon="lock">
+    Verify transaction correctness with zkSNARKs while keeping amounts and identities private
+  </Card>
+  <Card title="Cross-chain bridge" icon="bridge">
+    Seamless L1↔L2 integration with Ethereum mainnet via OmniBridge
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Architecture
 
-## Need inspiration?
+<CardGroup cols={3}>
+  <Card title="Architecture overview" icon="sitemap" href="/architecture/overview">
+    Core components and system design
+  </Card>
+  <Card title="UTXO model" icon="database" href="/architecture/utxo-model">
+    Bitcoin-style privacy with commitments and nullifiers
+  </Card>
+  <Card title="ZK proofs" icon="shield-check" href="/architecture/zero-knowledge-proofs">
+    zkSNARK circuits and verification
+  </Card>
+  <Card title="Smart contracts" icon="file-contract" href="/contracts/tornado-pool">
+    TornadoPool and verifier contracts
+  </Card>
+  <Card title="Bridge system" icon="link" href="/bridge/overview">
+    L1↔L2 cross-chain operations
+  </Card>
+  <Card title="Merkle tree" icon="network-wired" href="/architecture/merkle-tree">
+    Commitment tracking and proof generation
+  </Card>
+</CardGroup>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Developer resources
+
+<CardGroup cols={2}>
+  <Card title="Installation guide" icon="download" href="/developer/installation">
+    Set up your development environment
+  </Card>
+  <Card title="Making deposits" icon="arrow-down" href="/developer/deposits">
+    Deposit funds into the privacy pool
+  </Card>
+  <Card title="Shielded transfers" icon="paper-plane" href="/developer/transfers">
+    Send private transfers between users
+  </Card>
+  <Card title="Withdrawals" icon="arrow-up" href="/developer/withdrawals">
+    Withdraw funds to L1 or L2 addresses
+  </Card>
+</CardGroup>
+
+## JavaScript SDK
+
+<CardGroup cols={2}>
+  <Card title="SDK overview" icon="book" href="/sdk/overview">
+    Overview of the JavaScript SDK
+  </Card>
+  <Card title="Utxo class" icon="cube" href="/sdk/utxo">
+    Create and manage UTXOs
+  </Card>
+  <Card title="Keypair class" icon="key" href="/sdk/keypair">
+    Generate and manage keypairs
+  </Card>
+  <Card title="Transactions" icon="exchange" href="/sdk/transactions">
+    Build and submit transactions
+  </Card>
+</CardGroup>
+
+## Deployment
+
+<CardGroup cols={2}>
+  <Card title="L1 deployment" icon="1" href="/deployment/l1-deployment">
+    Deploy L1Unwrapper to Ethereum mainnet
+  </Card>
+  <Card title="L2 deployment" icon="2" href="/deployment/l2-deployment">
+    Deploy TornadoPool to Gnosis Chain
+  </Card>
+  <Card title="Governance" icon="gavel" href="/operations/governance">
+    Cross-chain governance operations
+  </Card>
+  <Card title="Upgrades" icon="arrow-up-from-bracket" href="/operations/upgrades">
+    Upgrade contracts via governance
+  </Card>
+</CardGroup>

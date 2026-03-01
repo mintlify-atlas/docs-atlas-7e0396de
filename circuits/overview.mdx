@@ -1,0 +1,93 @@
+---
+title: "ZK Circuits Overview"
+description: "Introduction to Tornado Nova's zero-knowledge circuits built with Circom"
+---
+
+## Introduction
+
+Tornado Nova uses zero-knowledge circuits written in [Circom](https://docs.circom.io/) to enable private transactions. These circuits generate zk-SNARK proofs that validate transaction correctness without revealing sensitive information like amounts, recipients, or transaction history.
+
+## Circuit Architecture
+
+The circuit system is composed of several modular components:
+
+### Core Components
+
+<Steps>
+  <Step title="Transaction Circuits">
+    Universal JoinSplit circuits that support either 2 or 16 inputs with 2 outputs. These handle the main transaction logic including commitment verification, nullifier generation, and amount invariants.
+  </Step>
+  
+  <Step title="Merkle Proof Circuits">
+    Cryptographic proof circuits that verify a UTXO commitment exists in the Merkle tree without revealing which specific UTXO it is.
+  </Step>
+  
+  <Step title="Keypair Circuits">
+    Simple hash-based keypair generation and signature schemes used for UTXO ownership proof.
+  </Step>
+</Steps>
+
+## UTXO Model
+
+Tornado Nova implements a UTXO (Unspent Transaction Output) model similar to Bitcoin. Each UTXO contains:
+
+```circom
+Utxo structure:
+{
+    amount,      // Value of the UTXO
+    pubkey,      // Owner's public key
+    blinding,    // Random number for privacy
+}
+```
+
+### Cryptographic Primitives
+
+**Commitments**: Hide UTXO details while allowing verification
+```
+commitment = hash(amount, pubKey, blinding)
+```
+
+**Nullifiers**: Prevent double-spending without revealing which UTXO was spent
+```
+nullifier = hash(commitment, merklePath, sign(privKey, commitment, merklePath))
+```
+
+<Note>
+All hash functions use Poseidon, a ZK-friendly hash function optimized for efficient circuit representation.
+</Note>
+
+## Circuit Parameters
+
+The circuits use the following key parameters:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Merkle Tree Levels | 5 | Supports up to 32 UTXOs (2^5) |
+| Input Variants | 2 or 16 | Number of input UTXOs per transaction |
+| Outputs | 2 | Number of output UTXOs per transaction |
+| Zero Leaf | `keccak256("tornado") % FIELD_SIZE` | Default value for empty tree positions |
+
+<Warning>
+The zero leaf value must match between the circuit and smart contract: `21663839004416932945382355908790599225266501822907911457504978515578255421292`
+</Warning>
+
+## Privacy Guarantees
+
+The circuits ensure:
+
+- **Anonymity**: Transactions cannot be linked to specific users
+- **Confidentiality**: Transaction amounts remain private
+- **Unlinkability**: Input and output UTXOs cannot be correlated
+- **Non-interactivity**: No interaction required between sender and receiver
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Transaction Circuits" icon="code-branch" href="/circuits/transaction-circuits">
+    Learn about the 2 and 16 input transaction circuit variants
+  </Card>
+  
+  <Card title="Merkle Proofs" icon="sitemap" href="/circuits/merkle-proofs">
+    Understand how Merkle proof verification works in circuits
+  </Card>
+</CardGroup>

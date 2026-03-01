@@ -1,0 +1,212 @@
+---
+title: UTXO model
+description: How Tornado Nova uses unspent transaction outputs for privacy-preserving transactions
+---
+
+Tornado Nova implements a UTXO (Unspent Transaction Output) model similar to Bitcoin, adapted for privacy on Ethereum. This model provides better privacy than account-based systems by breaking the link between transaction inputs and outputs.
+
+## UTXO structure
+
+Each UTXO consists of three components that together form a unique commitment:
+
+```javascript src/utxo.js
+class Utxo {
+  constructor({ amount = 0, keypair = new Keypair(), blinding = randomBN(), index = null } = {}) {
+    this.amount = BigNumber.from(amount)
+    this.blinding = BigNumber.from(blinding)
+    this.keypair = keypair
+    this.index = index
+  }
+}
+```
+
+<Steps>
+  <Step title="Amount">
+    The value stored in this UTXO, represented as a BigNumber. Can be zero for dummy inputs.
+  </Step>
+  
+  <Step title="Keypair">
+    Contains the owner's public key for receiving and private key for spending. Generated using Baby Jubjub elliptic curve cryptography.
+  </Step>
+  
+  <Step title="Blinding factor">
+    A random number that ensures identical amounts and keys produce different commitments, preventing linkability.
+  </Step>
+</Steps>
+
+## Commitment generation
+
+A commitment is a cryptographic hash that represents a UTXO without revealing its contents:
+
+```javascript src/utxo.js
+getCommitment() {
+  if (!this._commitment) {
+    this._commitment = poseidonHash([this.amount, this.keypair.pubkey, this.blinding])
+  }
+  return this._commitment
+}
+```
+
+The same computation occurs in the zero-knowledge circuit:
+
+```circom circuits/transaction.circom
+inCommitmentHasher[tx] = Poseidon(3);
+inCommitmentHasher[tx].inputs[0] <== inAmount[tx];
+inCommitmentHasher[tx].inputs[1] <== inKeypair[tx].publicKey;
+inCommitmentHasher[tx].inputs[2] <== inBlinding[tx];
+```
+
+<Note>
+Poseidon is used instead of keccak256 because it's much more efficient in zero-knowledge circuits, reducing proof generation time and gas costs.
+</Note>
+
+## Nullifier generation
+
+Nullifiers prevent double-spending by creating a unique identifier for each spent UTXO:
+
+```javascript src/utxo.js
+getNullifier() {
+  if (!this._nullifier) {
+    if (
+      this.amount > 0 &&
+      (this.index === undefined ||
+        this.index === null ||
+        this.keypair.privkey === undefined ||
+        this.keypair.privkey === null)
+    ) {
+      throw new Error('Can not compute nullifier without utxo index or private key')
+    }
+    const signature = this.keypair.privkey ? this.keypair.sign(this.getCommitment(), this.index || 0) : 0
+    this._nullifier = poseidonHash([this.getCommitment(), this.index || 0, signature])
+  }
+  return this._nullifier
+}
+```
+
+The nullifier computation requires:
+
+1. **Commitment**: The UTXO's commitment hash
+2. **Index**: The UTXO's position in the Merkle tree
+3. **Signature**: A signature over the commitment and index, proving ownership
+
+In the circuit, nullifiers are computed and verified:
+
+```circom circuits/transaction.circom
+inSignature[tx] = Signature();
+inSignature[tx].privateKey <== inPrivateKey[tx];
+inSignature[tx].commitment <== inCommitmentHasher[tx].out;
+inSignature[tx].merklePath <== inPathIndices[tx];
+
+inNullifierHasher[tx] = Poseidon(3);
+inNullifierHasher[tx].inputs[0] <== inCommitmentHasher[tx].out;
+inNullifierHasher[tx].inputs[1] <== inPathIndices[tx];
+inNullifierHasher[tx].inputs[2] <== inSignature[tx].out;
+inNullifierHasher[tx].out === inputNullifier[tx];
+```
+
+<Warning>
+Nullifiers are publicly visible on-chain and stored permanently. The smart contract checks that nullifiers haven't been used before accepting a transaction.
+</Warning>
+
+## Transaction model
+
+Transactions consume input UTXOs and create output UTXOs. The circuit supports flexible transaction sizes:
+
+```circom circuits/transaction.circom
+// Universal JoinSplit transaction with nIns inputs and 2 outputs
+template Transaction(levels, nIns, nOuts, zeroLeaf) {
+    signal input root;
+    signal input publicAmount;
+    signal input extDataHash;
+
+    // data for transaction inputs
+    signal         input inputNullifier[nIns];
+    signal private input inAmount[nIns];
+    signal private input inPrivateKey[nIns];
+    signal private input inBlinding[nIns];
+    signal private input inPathIndices[nIns];
+    signal private input inPathElements[nIns][levels];
+
+    // data for transaction outputs
+    signal         input outputCommitment[nOuts];
+    signal private input outAmount[nOuts];
+    signal private input outPubkey[nOuts];
+    signal private input outBlinding[nOuts];
+}
+```
+
+Tornado Nova deploys two verifier contracts:
+
+- **verifier2**: For transactions with 2 inputs
+- **verifier16**: For transactions with 16 inputs (for consolidating many small UTXOs)
+
+## Amount invariant
+
+The core security property is that total input value equals total output value plus any public amount:
+
+```circom circuits/transaction.circom
+// verify amount invariant
+sumIns + publicAmount === sumOuts;
+```
+
+Where:
+- `sumIns` = sum of all input UTXO amounts
+- `sumOuts` = sum of all output UTXO amounts (always 2)
+- `publicAmount` = `extAmount - fee`
+
+The smart contract calculates the public amount:
+
+```solidity contracts/TornadoPool.sol
+function calculatePublicAmount(int256 _extAmount, uint256 _fee) public pure returns (uint256) {
+    require(_fee < MAX_FEE, "Invalid fee");
+    require(_extAmount > -MAX_EXT_AMOUNT && _extAmount < MAX_EXT_AMOUNT, "Invalid ext amount");
+    int256 publicAmount = _extAmount - int256(_fee);
+    return (publicAmount >= 0) ? uint256(publicAmount) : FIELD_SIZE - uint256(-publicAmount);
+}
+```
+
+## UTXO encryption
+
+Output UTXOs are encrypted to recipient public keys so only they can discover and spend them:
+
+```javascript src/utxo.js
+encrypt() {
+  const bytes = Buffer.concat([toBuffer(this.amount, 31), toBuffer(this.blinding, 31)])
+  return this.keypair.encrypt(bytes)
+}
+
+static decrypt(keypair, data, index) {
+  const buf = keypair.decrypt(data)
+  return new Utxo({
+    amount: BigNumber.from('0x' + buf.slice(0, 31).toString('hex')),
+    blinding: BigNumber.from('0x' + buf.slice(31, 62).toString('hex')),
+    keypair,
+    index,
+  })
+}
+```
+
+Encrypted outputs are emitted in events when commitments are added:
+
+```solidity contracts/TornadoPool.sol
+emit NewCommitment(_args.outputCommitments[0], nextIndex - 2, _extData.encryptedOutput1);
+emit NewCommitment(_args.outputCommitments[1], nextIndex - 1, _extData.encryptedOutput2);
+```
+
+<Note>
+Recipients scan the blockchain for `NewCommitment` events and attempt to decrypt each encrypted output with their private key. Successfully decrypted outputs are UTXOs they can spend.
+</Note>
+
+## Zero-amount UTXOs
+
+The circuit allows zero-amount UTXOs to pad transactions when fewer real inputs are needed:
+
+```circom circuits/transaction.circom
+// check merkle proof only if amount is non-zero
+inCheckRoot[tx] = ForceEqualIfEnabled();
+inCheckRoot[tx].in[0] <== root;
+inCheckRoot[tx].in[1] <== inTree[tx].root;
+inCheckRoot[tx].enabled <== inAmount[tx];
+```
+
+This enables transactions with 1 real input and 1 dummy input to use the 2-input circuit, providing better anonymity by making all transactions look similar.

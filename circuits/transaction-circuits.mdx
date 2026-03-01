@@ -1,0 +1,256 @@
+---
+title: "Transaction Circuits"
+description: "Universal JoinSplit circuits with support for 2 or 16 input transactions"
+---
+
+## Overview
+
+Tornado Nova implements universal JoinSplit transaction circuits that allow combining multiple input UTXOs into output UTXOs. The system supports two variants:
+
+- **Transaction2**: Up to 2 input UTXOs
+- **Transaction16**: Up to 16 input UTXOs
+
+Both variants produce exactly 2 output UTXOs, enabling flexible transaction patterns including deposits, withdrawals, transfers, and splitting/merging of funds.
+
+## Circuit Template
+
+The core transaction circuit is defined as:
+
+```circom
+template Transaction(levels, nIns, nOuts, zeroLeaf)
+```
+
+### Parameters
+
+- `levels`: Merkle tree depth (5 levels = 32 leaves)
+- `nIns`: Number of input UTXOs (2 or 16)
+- `nOuts`: Number of output UTXOs (always 2)
+- `zeroLeaf`: Hash of default zero values for empty tree positions
+
+## Public Inputs
+
+These values are visible on-chain and included in the proof:
+
+```circom
+signal input root;              // Merkle root of UTXO tree
+signal input publicAmount;      // extAmount - fee (for deposits/withdrawals)
+signal input extDataHash;       // Hash of external transaction data
+signal input inputNullifier[nIns];    // Nullifiers to prevent double-spending
+signal input outputCommitment[nOuts]; // New UTXO commitments
+```
+
+<Note>
+`publicAmount` represents the net external flow: positive for deposits, negative for withdrawals, zero for private transfers.
+</Note>
+
+## Private Inputs
+
+These values remain private and are only known to the prover:
+
+### Input UTXO Data
+```circom
+signal private input inAmount[nIns];           // Input amounts
+signal private input inPrivateKey[nIns];       // Private keys for ownership
+signal private input inBlinding[nIns];         // Blinding factors
+signal private input inPathIndices[nIns];      // Merkle path positions
+signal private input inPathElements[nIns][levels]; // Merkle proof data
+```
+
+### Output UTXO Data
+```circom
+signal private input outAmount[nOuts];         // Output amounts
+signal private input outPubkey[nOuts];         // Recipient public keys
+signal private input outBlinding[nOuts];       // New blinding factors
+```
+
+## Circuit Logic
+
+### Input Verification
+
+For each input UTXO, the circuit performs the following steps:
+
+<Steps>
+  <Step title="Derive Public Key">
+    Compute the public key from the private key using Poseidon hash:
+    ```circom
+    inKeypair[tx] = Keypair();
+    inKeypair[tx].privateKey <== inPrivateKey[tx];
+    ```
+  </Step>
+  
+  <Step title="Compute Commitment">
+    Hash the UTXO components to create the commitment:
+    ```circom
+    inCommitmentHasher[tx] = Poseidon(3);
+    inCommitmentHasher[tx].inputs[0] <== inAmount[tx];
+    inCommitmentHasher[tx].inputs[1] <== inKeypair[tx].publicKey;
+    inCommitmentHasher[tx].inputs[2] <== inBlinding[tx];
+    ```
+  </Step>
+  
+  <Step title="Generate Signature">
+    Create a signature over the commitment and Merkle path:
+    ```circom
+    inSignature[tx] = Signature();
+    inSignature[tx].privateKey <== inPrivateKey[tx];
+    inSignature[tx].commitment <== inCommitmentHasher[tx].out;
+    inSignature[tx].merklePath <== inPathIndices[tx];
+    ```
+  </Step>
+  
+  <Step title="Compute Nullifier">
+    Hash commitment, path, and signature to create the nullifier:
+    ```circom
+    inNullifierHasher[tx] = Poseidon(3);
+    inNullifierHasher[tx].inputs[0] <== inCommitmentHasher[tx].out;
+    inNullifierHasher[tx].inputs[1] <== inPathIndices[tx];
+    inNullifierHasher[tx].inputs[2] <== inSignature[tx].out;
+    inNullifierHasher[tx].out === inputNullifier[tx];
+    ```
+  </Step>
+  
+  <Step title="Verify Merkle Proof">
+    Check the UTXO exists in the tree (only if amount is non-zero):
+    ```circom
+    inTree[tx] = MerkleProof(levels);
+    inTree[tx].leaf <== inCommitmentHasher[tx].out;
+    inTree[tx].pathIndices <== inPathIndices[tx];
+    // Check proof only when amount > 0
+    inCheckRoot[tx].enabled <== inAmount[tx];
+    ```
+  </Step>
+</Steps>
+
+### Output Verification
+
+For each output UTXO:
+
+```circom
+// Compute commitment
+outCommitmentHasher[tx] = Poseidon(3);
+outCommitmentHasher[tx].inputs[0] <== outAmount[tx];
+outCommitmentHasher[tx].inputs[1] <== outPubkey[tx];
+outCommitmentHasher[tx].inputs[2] <== outBlinding[tx];
+outCommitmentHasher[tx].out === outputCommitment[tx];
+
+// Verify amount fits in 248 bits to prevent overflow
+outAmountCheck[tx] = Num2Bits(248);
+outAmountCheck[tx].in <== outAmount[tx];
+```
+
+<Warning>
+Output amounts must fit in 248 bits (not the full field size) to prevent overflow attacks.
+</Warning>
+
+### Constraint Checks
+
+#### 1. Amount Invariant
+
+The circuit enforces conservation of funds:
+
+```circom
+sumIns + publicAmount === sumOuts
+```
+
+This ensures:
+- Private transfers: `sumIns = sumOuts` (publicAmount = 0)
+- Deposits: `sumIns + deposit = sumOuts` (publicAmount > 0)
+- Withdrawals: `sumIns = sumOuts + withdrawal` (publicAmount < 0)
+
+#### 2. No Duplicate Nullifiers
+
+Prevents double-spending within the same transaction:
+
+```circom
+for (var i = 0; i < nIns - 1; i++) {
+  for (var j = i + 1; j < nIns; j++) {
+    sameNullifiers[index] = IsEqual();
+    sameNullifiers[index].in[0] <== inputNullifier[i];
+    sameNullifiers[index].in[1] <== inputNullifier[j];
+    sameNullifiers[index].out === 0;  // Must be different
+  }
+}
+```
+
+#### 3. External Data Integrity
+
+Ensures `extDataHash` is bound to the proof:
+
+```circom
+signal extDataSquare <== extDataHash * extDataHash;
+```
+
+## Circuit Variants
+
+### Transaction2 Circuit
+
+```circom transaction2.circom
+include "./transaction.circom"
+
+component main = Transaction(5, 2, 2, 11850551329423159860688778991827824730037759162201783566284850822760196767874);
+```
+
+**Use cases**:
+- Simple transfers
+- Deposits and withdrawals
+- Lower proof generation time
+- Smaller proof size
+
+### Transaction16 Circuit
+
+```circom transaction16.circom
+include "./transaction.circom"
+
+component main = Transaction(5, 16, 2, 11850551329423159860688778991827824730037759162201783566284850822760196767874);
+```
+
+**Use cases**:
+- Consolidating many small UTXOs
+- Complex multi-party transactions
+- Maximizing anonymity set
+- Higher proof generation time trade-off
+
+<Note>
+The `zeroLeaf` parameter is `Poseidon(zero, zero)` where `zero = keccak256("tornado") % FIELD_SIZE`.
+</Note>
+
+## Security Properties
+
+### Proven Guarantees
+
+1. **Double-spend prevention**: Each nullifier can only be used once
+2. **Ownership proof**: Only the private key holder can spend a UTXO
+3. **Amount conservation**: Funds cannot be created or destroyed
+4. **Membership proof**: Input UTXOs must exist in the Merkle tree
+5. **Range validity**: Output amounts are within valid bounds
+
+### Zero-Knowledge Properties
+
+- Input amounts remain hidden
+- Output amounts remain hidden
+- Sender identity is concealed
+- Receiver identity is concealed
+- Transaction graph is unlinkable
+
+<Warning>
+Input amounts do not require range checks because they were already validated as outputs in a previous transaction. Zero-amount UTXOs are allowed and skip Merkle proof verification.
+</Warning>
+
+## Performance Considerations
+
+| Metric | Transaction2 | Transaction16 |
+|--------|--------------|---------------|
+| Constraints | ~10K | ~60K |
+| Proving Time | ~5s | ~30s |
+| Proof Size | 128 bytes | 128 bytes |
+| Verification Gas | ~280K | ~280K |
+
+<Note>
+Actual performance depends on hardware and proving system. Numbers are approximate.
+</Note>
+
+## Next Steps
+
+<Card title="Merkle Proof Circuits" icon="sitemap" href="/circuits/merkle-proofs">
+  Learn how Merkle tree verification works in the circuits
+</Card>

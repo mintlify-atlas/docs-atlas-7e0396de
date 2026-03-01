@@ -1,0 +1,465 @@
+---
+title: Configuring Limits
+description: Configure deposit and withdrawal limits for the Tornado Nova pool
+---
+
+Tornado Nova enforces deposit and withdrawal limits to manage risk, ensure economic security, and comply with operational requirements. These limits can be configured through governance or the L2 multisig.
+
+## Deposit and Withdrawal Limits
+
+The TornadoPool contract maintains configurable limits:
+
+```solidity contracts/TornadoPool.sol
+contract TornadoPool {
+  uint256 public constant MAX_EXT_AMOUNT = 2**248;
+  uint256 public constant MIN_EXT_AMOUNT_LIMIT = 0.5 ether;
+  
+  uint256 public maximumDepositAmount;
+}
+```
+
+### Maximum Deposit Amount
+
+- **Variable**: `maximumDepositAmount`
+- **Purpose**: Limits the amount per deposit transaction
+- **Configurable**: Yes, via `configureLimits()`
+- **Default**: Set during initialization (e.g., 100 ETH)
+
+### Minimum Withdrawal Amount
+
+- **Constant**: `MIN_EXT_AMOUNT_LIMIT`
+- **Value**: 0.5 ether
+- **Purpose**: Prevents dust withdrawals
+- **Configurable**: No, hardcoded in contract
+
+<Note>
+The minimum withdrawal amount is hardcoded at 0.5 tokens and cannot be changed without a contract upgrade. This prevents spam and dust attacks.
+</Note>
+
+## Configuration Methods
+
+There are two ways to configure limits:
+
+1. **Initial configuration** during deployment
+2. **Runtime reconfiguration** via governance or multisig
+
+### Initial Configuration
+
+Limits are set during pool initialization:
+
+```javascript scripts/deployTornado.js
+// Set via environment variables
+const { MINIMUM_WITHDRAWAL_AMOUNT, MAXIMUM_DEPOSIT_AMOUNT } = process.env
+
+// Initialize the pool
+await tornadoPool.initialize(
+  utils.parseEther(MINIMUM_WITHDRAWAL_AMOUNT),  // Not actually used, MIN is hardcoded
+  utils.parseEther(MAXIMUM_DEPOSIT_AMOUNT)      // Sets maximumDepositAmount
+)
+```
+
+Environment variables:
+
+```bash .env
+MINIMUM_WITHDRAWAL_AMOUNT=0.5
+MAXIMUM_DEPOSIT_AMOUNT=100
+```
+
+See contracts/TornadoPool.sol:112-115.
+
+<Warning>
+The pool can only be initialized once. After initialization, use `configureLimits()` to update the maximum deposit amount.
+</Warning>
+
+### Runtime Configuration
+
+Update limits after deployment using the `configureLimits()` function.
+
+## configureLimits() Function
+
+The `configureLimits()` function updates the maximum deposit amount:
+
+```solidity contracts/TornadoPool.sol
+function configureLimits(uint256 _maximumDepositAmount) 
+  public 
+  onlyMultisig 
+{
+  _configureLimits(_maximumDepositAmount);
+}
+
+function _configureLimits(uint256 _maximumDepositAmount) internal {
+  maximumDepositAmount = _maximumDepositAmount;
+}
+```
+
+See contracts/TornadoPool.sol:191-193 and contracts/TornadoPool.sol:297-299.
+
+### Access Control
+
+The function has the `onlyMultisig` modifier:
+
+```solidity
+modifier onlyMultisig() {
+  require(msg.sender == multisig, "only governance");
+  _;
+}
+```
+
+Two entities can call `configureLimits()`:
+
+1. **L2 Multisig**: Direct call for rapid updates
+2. **L1 Governance**: Via cross-chain AMB bridge message
+
+See contracts/TornadoPool.sol:71-74.
+
+## Configuring via L2 Multisig
+
+The L2 multisig can update limits directly without going through cross-chain governance.
+
+<Steps>
+  <Step title="Connect as Multisig">
+    Connect to the TornadoPool contract as the multisig signer:
+
+    ```javascript
+    const tornadoPool = await ethers.getContractAt(
+      'TornadoPool',
+      proxyAddress
+    )
+    
+    // Connect with multisig signer
+    const multisigSigner = await ethers.getSigner(multisigAddress)
+    const pool = tornadoPool.connect(multisigSigner)
+    ```
+  </Step>
+
+  <Step title="Prepare New Limit">
+    Determine the new maximum deposit amount:
+
+    ```javascript
+    const newMaxDeposit = ethers.utils.parseEther('200') // 200 tokens
+    
+    console.log('Current max:', await pool.maximumDepositAmount())
+    console.log('New max:', newMaxDeposit)
+    ```
+  </Step>
+
+  <Step title="Call configureLimits">
+    Execute the configuration update:
+
+    ```javascript
+    const tx = await pool.configureLimits(newMaxDeposit)
+    console.log('Transaction hash:', tx.hash)
+    
+    await tx.wait()
+    console.log('Limits updated')
+    ```
+  </Step>
+
+  <Step title="Verify Update">
+    Confirm the new limit is in effect:
+
+    ```javascript
+    const updatedMax = await pool.maximumDepositAmount()
+    console.log('Updated max deposit:', ethers.utils.formatEther(updatedMax))
+    
+    assert(updatedMax.eq(newMaxDeposit), 'Update failed')
+    ```
+  </Step>
+</Steps>
+
+### Multisig Example (Gnosis Safe)
+
+Using Gnosis Safe multisig:
+
+```javascript
+// Encode the transaction
+const configureLimitsData = pool.interface.encodeFunctionData(
+  'configureLimits',
+  [ethers.utils.parseEther('150')]
+)
+
+// Submit to Gnosis Safe
+const safeTx = {
+  to: proxyAddress,
+  value: 0,
+  data: configureLimitsData,
+  operation: 0, // CALL
+}
+
+// Signers sign and execute via Gnosis Safe UI or SDK
+```
+
+## Configuring via L1 Governance
+
+For more transparency and community oversight, configure limits through L1 governance.
+
+<Steps>
+  <Step title="Encode configureLimits Call">
+    Encode the function call:
+
+    ```javascript
+    const TornadoPool = await ethers.getContractFactory('TornadoPool')
+    
+    const configureLimitsCalldata = TornadoPool.interface.encodeFunctionData(
+      'configureLimits',
+      [ethers.utils.parseEther('250')] // 250 tokens
+    )
+    ```
+  </Step>
+
+  <Step title="Encode AMB Bridge Message">
+    Wrap in AMB bridge call:
+
+    ```javascript
+    const ambCalldata = ethers.utils.defaultAbiCoder.encode(
+      ['address', 'bytes', 'uint256'],
+      [
+        proxyAddress,            // Target: L2 proxy
+        configureLimitsCalldata, // Data: configureLimits(uint256)
+        500000,                  // Gas: 500k for L2 execution
+      ]
+    )
+    ```
+  </Step>
+
+  <Step title="Create Governance Proposal">
+    Submit proposal on L1 governance:
+
+    ```javascript
+    const governance = await ethers.getContractAt(
+      'TornadoGovernance',
+      govAddress
+    )
+    
+    await governance.propose(
+      [ambBridge.address],                              // targets
+      [0],                                              // values
+      ['requireToPassMessage(address,bytes,uint256)'],  // signatures
+      [ambCalldata],                                    // calldatas
+      'Increase max deposit to 250 tokens'              // description
+    )
+    ```
+  </Step>
+
+  <Step title="Execute After Voting">
+    After voting passes, execute:
+
+    ```javascript
+    await governance.execute(proposalId)
+    ```
+
+    The AMB bridge will relay the message to L2, which will call `configureLimits()`.
+  </Step>
+</Steps>
+
+<Note>
+Governance-based configuration takes longer (voting period + timelock) but provides greater transparency and community input.
+</Note>
+
+## Limit Enforcement
+
+### Deposit Enforcement
+
+The maximum deposit limit is enforced in the `transact()` function:
+
+```solidity contracts/TornadoPool.sol
+function transact(Proof memory _args, ExtData memory _extData) public {
+  if (_extData.extAmount > 0) {
+    // for deposits from L2
+    token.transferFrom(msg.sender, address(this), uint256(_extData.extAmount));
+    require(
+      uint256(_extData.extAmount) <= maximumDepositAmount,
+      "amount is larger than maximumDepositAmount"
+    );
+  }
+  _transact(_args, _extData);
+}
+```
+
+See contracts/TornadoPool.sol:119-127.
+
+### Bridge Deposit Enforcement
+
+Deposits from L1 via the OmniBridge are also checked:
+
+```solidity contracts/TornadoPool.sol
+function onTokenBridged(
+  IERC6777 _token,
+  uint256 _amount,
+  bytes calldata _data
+) external override {
+  // ...
+  require(
+    uint256(_extData.extAmount) <= maximumDepositAmount,
+    "amount is larger than maximumDepositAmount"
+  );
+  // ...
+}
+```
+
+See contracts/TornadoPool.sol:143-158.
+
+### Withdrawal Minimum
+
+The minimum withdrawal is enforced through the proof validation:
+
+```solidity
+function calculatePublicAmount(int256 _extAmount, uint256 _fee) 
+  public 
+  pure 
+  returns (uint256) 
+{
+  require(_fee < MAX_FEE, "Invalid fee");
+  require(
+    _extAmount > -MAX_EXT_AMOUNT && _extAmount < MAX_EXT_AMOUNT,
+    "Invalid ext amount"
+  );
+  // ...
+}
+```
+
+For withdrawals (`_extAmount < 0`), the amount must be at least 0.5 ether.
+
+## Use Cases for Limit Configuration
+
+### Increase Limits (Growth Phase)
+
+As the protocol grows and gains confidence:
+
+```javascript
+// Gradually increase max deposit
+// Phase 1: 100 ETH
+await pool.configureLimits(ethers.utils.parseEther('100'))
+
+// Phase 2: 500 ETH (after 3 months of stable operation)
+await pool.configureLimits(ethers.utils.parseEther('500'))
+
+// Phase 3: 1000 ETH (after 6 months)
+await pool.configureLimits(ethers.utils.parseEther('1000'))
+```
+
+### Decrease Limits (Risk Mitigation)
+
+In response to security concerns or market conditions:
+
+```javascript
+// Emergency: Reduce max deposit during exploit investigation
+await pool.configureLimits(ethers.utils.parseEther('10'))
+
+// Gradual recovery after fix
+await pool.configureLimits(ethers.utils.parseEther('50'))
+```
+
+### Market-Responsive Limits
+
+Adjust based on token price volatility:
+
+```javascript
+// High volatility: Reduce limits
+if (volatility > THRESHOLD) {
+  await pool.configureLimits(ethers.utils.parseEther('50'))
+}
+
+// Stable market: Restore normal limits
+if (volatility < THRESHOLD) {
+  await pool.configureLimits(ethers.utils.parseEther('200'))
+}
+```
+
+## Monitoring Limits
+
+Track deposit amounts and limit compliance:
+
+```javascript
+const tornadoPool = await ethers.getContractAt('TornadoPool', proxyAddress)
+
+// Check current limit
+const maxDeposit = await tornadoPool.maximumDepositAmount()
+console.log('Max deposit:', ethers.utils.formatEther(maxDeposit))
+
+// Monitor deposits
+tornadoPool.on('NewCommitment', async (commitment, index, encryptedOutput) => {
+  // Decode transaction to get amount
+  console.log('New deposit at index:', index)
+})
+
+// Alert on configuration changes
+tornadoPool.on('configureLimits', (newLimit) => {
+  console.log('Limit changed to:', ethers.utils.formatEther(newLimit))
+})
+```
+
+<Note>
+The contract doesn't emit an event when limits are changed. Consider adding events in upgraded implementations for better monitoring.
+</Note>
+
+## Best Practices
+
+### Limit Setting Strategy
+
+<Steps>
+  <Step title="Start Conservative">
+    Begin with lower limits during initial launch:
+    
+    - Max deposit: 10-50 tokens
+    - Monitor for 1-2 weeks
+    - Ensure system stability
+  </Step>
+
+  <Step title="Gradual Increase">
+    Increase limits gradually based on:
+    
+    - Protocol security track record
+    - Total value locked (TVL)
+    - Market conditions
+    - Audit results
+  </Step>
+
+  <Step title="Risk Assessment">
+    Before increasing limits, assess:
+    
+    - Economic security of the system
+    - Potential impact of maximum loss
+    - Insurance or safety modules available
+    - Community sentiment
+  </Step>
+
+  <Step title="Emergency Response">
+    Maintain ability to reduce limits quickly:
+    
+    - L2 multisig has direct access
+    - Documented emergency procedures
+    - Pre-authorized signers ready to act
+  </Step>
+</Steps>
+
+### Security Considerations
+
+<Warning>
+**Important Security Notes:**
+
+1. **Multisig control**: The L2 multisig can change limits without governance oversight. Ensure multisig security.
+2. **Front-running**: Limit increases can be front-run. Consider using time-locks or commit-reveal.
+3. **Economic attacks**: Very high limits may enable economic attacks. Model the risk.
+4. **Regulatory compliance**: Some jurisdictions may require transaction limits. Consult legal counsel.
+</Warning>
+
+## Troubleshooting
+
+### Deposit Rejected: Amount Too Large
+
+Error: `"amount is larger than maximumDepositAmount"`
+
+**Solution**: User must deposit a smaller amount or wait for limit increase.
+
+### Withdrawal Rejected: Amount Too Small
+
+Error: `"Invalid ext amount"` or proof validation fails.
+
+**Solution**: User must withdraw at least 0.5 tokens (MIN_EXT_AMOUNT_LIMIT).
+
+### configureLimits Fails: Not Authorized
+
+Error: `"only governance"`
+
+**Solution**: Only the multisig or cross-chain governance can call this function. Verify the caller.

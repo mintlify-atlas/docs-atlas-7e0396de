@@ -1,0 +1,211 @@
+---
+title: L1 Deployment
+description: Deploy the L1Unwrapper contract on Ethereum mainnet or other Layer 1 networks
+---
+
+The L1 deployment consists of deploying the L1Unwrapper contract, which handles unwrapping of wrapped tokens (like WETH) to native tokens (like ETH) during withdrawal operations.
+
+## Prerequisites
+
+Before deploying to L1, ensure you have:
+
+- Hardhat environment configured
+- Private key with sufficient L1 native tokens for gas
+- Network RPC endpoint configured
+- Verified contract addresses for:
+  - OmniBridge
+  - Wrapped token (e.g., WETH)
+  - Multisig address
+
+## Configuration
+
+Update the `config.js` file with your L1 network parameters:
+
+```javascript config.js
+module.exports = {
+  // L1 Configuration
+  multisig: '0xb04E030140b30C27bcdfaafFFA98C57d80eDa7B4',
+  omniBridge: '0x88ad09518695c6c3712AC10a214bE5109a655671',
+  weth: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+  
+  // Deterministic deployment
+  singletonFactory: '0xce0042B868300000d44A59004Da54A005ffdcf9f',
+  salt: '0x0000000000000000000000000000000000000000000000000000000047941987',
+}
+```
+
+### Network Examples
+
+<Tabs>
+  <Tab title="Ethereum Mainnet">
+    ```javascript
+    multisig: '0xb04E030140b30C27bcdfaafFFA98C57d80eDa7B4'
+    omniBridge: '0x88ad09518695c6c3712AC10a214bE5109a655671'
+    weth: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+    ```
+  </Tab>
+  <Tab title="BSC">
+    ```javascript
+    multisig: '0xBAE5aBfa98466Dbe68836763B087f2d189f4D28f'
+    omniBridge: '0xf0b456250dc9990662a6f25808cc74a6d1131ea9'
+    weth: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c' // WBNB
+    ```
+  </Tab>
+</Tabs>
+
+## Deployment Process
+
+<Steps>
+  <Step title="Generate Deterministic Address">
+    The deployment script uses CREATE2 to calculate the deterministic address before deployment:
+
+    ```javascript
+    const { generate } = require('./src/0_generateAddresses')
+    
+    const contracts = await generate()
+    console.log('L1 unwrapper address:', contracts.unwrapperContract.address)
+    ```
+
+    The address is computed from:
+    - SingletonFactory address
+    - Salt value
+    - Contract bytecode with constructor arguments
+  </Step>
+
+  <Step title="Check Existing Deployment">
+    The script automatically checks if the contract is already deployed:
+
+    ```javascript
+    const contractCode = await ethers.provider.getCode(address)
+    if (contractCode !== '0x') {
+      console.log(`Contract ${address} already deployed. Skipping...`)
+      return
+    }
+    ```
+
+    This prevents accidental re-deployment and wasted gas.
+  </Step>
+
+  <Step title="Deploy via SingletonFactory">
+    Deploy the contract using the SingletonFactory:
+
+    ```bash
+    npx hardhat run scripts/deployL1Unwrapper.js --network mainnet
+    ```
+
+    The deployment uses:
+    - Fixed gas limit: 3,000,000
+    - Deterministic salt from config
+    - Pre-computed bytecode with constructor parameters
+  </Step>
+
+  <Step title="Verify Deployment">
+    Confirm the contract was deployed successfully:
+
+    ```bash
+    npx hardhat verify --network mainnet <UNWRAPPER_ADDRESS> \
+      <OMNI_BRIDGE> \
+      <WETH_ADDRESS> \
+      <MULTISIG_ADDRESS>
+    ```
+  </Step>
+</Steps>
+
+## Deployment Script
+
+The `scripts/deployL1Unwrapper.js` script handles the deployment:
+
+```javascript scripts/deployL1Unwrapper.js
+const { ethers } = require('hardhat')
+const config = require('../config')
+const { generate } = require('../src/0_generateAddresses')
+
+async function deploy({ address, bytecode, singletonFactory }) {
+  const contractCode = await ethers.provider.getCode(address)
+  if (contractCode !== '0x') {
+    console.log(`Contract ${address} already deployed. Skipping...`)
+    return
+  }
+  await singletonFactory.deploy(bytecode, config.salt, { gasLimit: 3000000 })
+}
+
+async function main() {
+  const singletonFactory = await ethers.getContractAt(
+    'SingletonFactory',
+    config.singletonFactory
+  )
+  const contracts = await generate()
+  await deploy({ ...contracts.unwrapperContract, singletonFactory })
+  console.log(
+    `L1 unwrapper contract deployed at ${contracts.unwrapperContract.address}`
+  )
+}
+```
+
+## L1Unwrapper Contract
+
+The L1Unwrapper contract receives wrapped tokens from the bridge and unwraps them to native tokens before sending to the recipient.
+
+### Constructor Parameters
+
+- `_omniBridge`: Address of the OmniBridge contract on L1
+- `_weth`: Address of the wrapped token (WETH, WBNB, etc.)
+- `_multisig`: Multisig address for emergency operations
+
+### Key Functions
+
+<CodeGroup>
+```solidity Constructor
+constructor(
+  address _omniBridge,
+  address _weth,
+  address _multisig
+)
+```
+
+```solidity Receive from Bridge
+function onTokenBridged(
+  address token,
+  uint256 amount,
+  bytes calldata data
+) external
+```
+</CodeGroup>
+
+<Note>
+The L1Unwrapper must be set as the recipient in the bridge call data for proper operation. See contracts/TornadoPool.sol:275-279 for the implementation.
+</Note>
+
+## Verification
+
+After deployment, verify the contract functionality:
+
+1. **Check contract code**: Ensure bytecode is deployed
+2. **Verify constructor args**: Confirm correct parameters
+3. **Test unwrapping**: Perform a test transaction (on testnet first)
+4. **Record address**: Save the deployed address for L2 configuration
+
+<Warning>
+The L1Unwrapper address must be configured in the L2 TornadoPool deployment. Save this address before proceeding to L2 deployment.
+</Warning>
+
+## Troubleshooting
+
+### Contract Already Deployed
+
+If you see "Contract already deployed. Skipping...":
+- The contract exists at the deterministic address
+- No action needed unless you need to change constructor parameters
+- To deploy with different parameters, change the salt value
+
+### Gas Estimation Failed
+
+- Ensure your account has sufficient ETH for gas
+- Check network congestion and adjust gas price
+- Verify SingletonFactory exists at the configured address
+
+### Verification Failed
+
+- Confirm constructor arguments match deployment
+- Check Etherscan API key in `.env`
+- Ensure contract source matches deployed bytecode

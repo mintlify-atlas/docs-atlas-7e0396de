@@ -1,0 +1,211 @@
+---
+title: 'Building Circuits'
+description: 'Learn how to build and compile zero-knowledge circuits for Tornado Nova'
+---
+
+## Overview
+
+Tornado Nova uses zero-knowledge circuits to generate proofs for private transactions. The circuits are built using Circom and compiled with snarkjs to generate verification keys and Solidity verifier contracts.
+
+## Circuit Types
+
+Tornado Nova uses two transaction circuit sizes:
+
+- **Transaction2**: Optimized for 2 inputs/outputs
+- **Transaction16**: Optimized for 16 inputs/outputs
+
+## Building Circuits
+
+<Steps>
+  <Step title="Run the circuit build command">
+    Build both circuit variants for development:
+
+    ```bash
+    yarn circuit
+    ```
+
+    This command executes:
+    ```bash
+    ./scripts/buildCircuit.sh 2 && ./scripts/buildCircuit.sh 16
+    ```
+
+    <Note>
+      Circuit building can take 10-30 minutes depending on your hardware.
+    </Note>
+  </Step>
+
+  <Step title="Wait for compilation">
+    The build script will:
+    1. Download powers of tau file (if not already present)
+    2. Compile the circuit with Circom
+    3. Generate witness generation files
+    4. Run trusted setup ceremony
+    5. Generate zkey files
+    6. Export Solidity verifier contracts
+  </Step>
+
+  <Step title="Verify output">
+    Check that the following files were generated in `artifacts/circuits/`:
+
+    ```
+    artifacts/circuits/
+    ├── ptau15                    # Powers of tau file
+    ├── transaction2.r1cs         # Constraint system
+    ├── transaction2.wasm         # Witness generator
+    ├── transaction2.zkey         # Proving key
+    ├── transaction2.sym          # Symbol file
+    ├── Verifier2.sol             # Solidity verifier
+    ├── transaction16.r1cs
+    ├── transaction16.wasm
+    ├── transaction16.zkey
+    ├── transaction16.sym
+    └── Verifier16.sol
+    ```
+  </Step>
+</Steps>
+
+## Build Script Details
+
+The `buildCircuit.sh` script performs the following operations:
+
+<CodeGroup>
+```bash buildCircuit.sh
+#!/bin/bash -e
+POWERS_OF_TAU=15 # circuit will support max 2^POWERS_OF_TAU constraints
+mkdir -p artifacts/circuits
+
+# Download powers of tau if not present
+if [ ! -f artifacts/circuits/ptau$POWERS_OF_TAU ]; then
+  echo "Downloading powers of tau file"
+  curl -L https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_$POWERS_OF_TAU.ptau \
+    --create-dirs -o artifacts/circuits/ptau$POWERS_OF_TAU
+fi
+
+# Compile circuit
+npx circom -v -r artifacts/circuits/transaction$1.r1cs \
+  -w artifacts/circuits/transaction$1.wasm \
+  -s artifacts/circuits/transaction$1.sym \
+  circuits/transaction$1.circom
+
+# Setup ceremony
+npx snarkjs groth16 setup artifacts/circuits/transaction$1.r1cs \
+  artifacts/circuits/ptau$POWERS_OF_TAU \
+  artifacts/circuits/tmp_transaction$1.zkey
+
+# Contribute to ceremony
+echo "qwe" | npx snarkjs zkey contribute \
+  artifacts/circuits/tmp_transaction$1.zkey \
+  artifacts/circuits/transaction$1.zkey
+
+# Generate Solidity verifier
+npx snarkjs zkey export solidityverifier \
+  artifacts/circuits/transaction$1.zkey \
+  artifacts/circuits/Verifier$1.sol
+
+# Rename verifier contract
+sed -i.bak "s/contract Verifier/contract Verifier${1}/g" \
+  artifacts/circuits/Verifier$1.sol
+
+# Display circuit info
+npx snarkjs info -r artifacts/circuits/transaction$1.r1cs
+```
+</CodeGroup>
+
+## Production Builds
+
+For production deployments, use the production build command:
+
+```bash
+yarn circuit_prod
+```
+
+This command:
+1. Removes old circuit artifacts
+2. Changes tree height to 23 (for larger Merkle trees)
+3. Builds both circuit variants with production settings
+4. Creates a compressed archive `artifacts/circuits.tar.gz`
+
+<Warning>
+  Production builds take significantly longer (1-2 hours) and require more memory. Ensure you have at least 8GB of available RAM.
+</Warning>
+
+## Changing Tree Height
+
+The Merkle tree height determines the maximum number of deposits the pool can handle:
+
+```bash
+yarn changeTreeHeight <height>
+```
+
+Example:
+```bash
+# Set tree height to 23 (supports 2^23 = 8,388,608 deposits)
+yarn changeTreeHeight 23
+```
+
+<Note>
+  After changing tree height, you must rebuild the circuits using `yarn circuit` or `yarn circuit_prod`.
+</Note>
+
+## Circuit Parameters
+
+### Powers of Tau
+
+- **Current setting**: 15
+- **Maximum constraints**: 2^15 = 32,768
+- **File source**: Hermez trusted setup ceremony
+
+### Constraint Counts
+
+After building, check the constraint count in the output:
+
+```bash
+npx snarkjs info -r artifacts/circuits/transaction2.r1cs
+```
+
+The constraint count must be less than 2^POWERS_OF_TAU.
+
+## Troubleshooting
+
+### Out of Memory Errors
+
+If you encounter out-of-memory errors:
+
+```bash
+# Increase Node.js heap size
+export NODE_OPTIONS="--max-old-space-size=8192"
+yarn circuit
+```
+
+### Download Failures
+
+If the powers of tau download fails:
+
+```bash
+# Download manually
+curl -L https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_15.ptau \
+  -o artifacts/circuits/ptau15
+```
+
+### Build Verification
+
+To verify your circuits are valid:
+
+```bash
+# Check circuit info
+npx snarkjs info -r artifacts/circuits/transaction2.r1cs
+npx snarkjs info -r artifacts/circuits/transaction16.r1cs
+
+# Verify zkey
+npx snarkjs zkey verify artifacts/circuits/transaction2.r1cs \
+  artifacts/circuits/ptau15 \
+  artifacts/circuits/transaction2.zkey
+```
+
+## Next Steps
+
+After building circuits:
+
+1. The generated Verifier contracts will be automatically deployed during contract deployment
+2. Configure your network settings in [Configuration](/developer/configuration)
+3. Run tests to ensure circuits work correctly: `yarn test`

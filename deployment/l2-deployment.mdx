@@ -1,0 +1,308 @@
+---
+title: L2 Deployment
+description: Deploy the TornadoPool privacy system on Gnosis Chain (xDai) or other Layer 2 networks
+---
+
+The L2 deployment is the core of Tornado Nova, including the TornadoPool contract, verifiers, hasher, and the cross-chain upgradeable proxy system.
+
+## Prerequisites
+
+Before deploying to L2, ensure you have:
+
+- L1Unwrapper address from L1 deployment
+- Hardhat environment configured for L2 network
+- Private key with sufficient L2 tokens for gas
+- Environment variables set:
+  - `MINIMUM_WITHDRAWAL_AMOUNT`
+  - `MAXIMUM_DEPOSIT_AMOUNT`
+
+## Configuration
+
+Update the `config.js` file with L2 network parameters:
+
+```javascript config.js
+module.exports = {
+  // L2 Configuration (Gnosis Chain)
+  verifier2: '0xdf3a408c53e5078af6e8fb2a85088d46ee09a61b',
+  verifier16: '0x743494b60097a2230018079c02fe21a7b687eaa5',
+  MERKLE_TREE_HEIGHT: 23,
+  hasher: '0x94c92f096437ab9958fc0a37f09348f30389ae79',
+  gcWeth: '0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1',
+  gcOmniBridge: '0xf6a78083ca3e2a662d6dd1703c939c8ace2e268d',
+  l1Unwrapper: '0x3F615bA21Bc6Cc5D4a6D798c5950cc5c42937fbd', // from L1 deployment
+  govAddress: '0x5efda50f22d34f262c29268506c5fa42cb56a1ce',
+  l1ChainId: 1,
+  gcMultisig: '0x1f727de610030a88863d7da45bdea4eb84655b52',
+}
+```
+
+<Warning>
+Ensure the `l1Unwrapper` address matches the contract deployed on L1. Mismatched addresses will break cross-chain withdrawals.
+</Warning>
+
+## Deployment Process
+
+<Steps>
+  <Step title="Compile Poseidon Hasher">
+    The Poseidon hasher requires special compilation:
+
+    ```bash
+    npx hardhat hasher
+    ```
+
+    This generates the Hasher contract from the Poseidon hash circuit.
+  </Step>
+
+  <Step title="Deploy Verifiers">
+    Deploy the zero-knowledge proof verifiers:
+
+    ```javascript
+    const Verifier2 = await ethers.getContractFactory('Verifier2')
+    const verifier2 = await Verifier2.deploy()
+    await verifier2.deployed()
+
+    const Verifier16 = await ethers.getContractFactory('Verifier16')
+    const verifier16 = await Verifier16.deploy()
+    await verifier16.deployed()
+    ```
+
+    - **Verifier2**: Validates proofs with 2 input notes
+    - **Verifier16**: Validates proofs with 16 input notes (for consolidation)
+  </Step>
+
+  <Step title="Deploy Hasher">
+    Deploy the Poseidon hasher contract:
+
+    ```javascript
+    const Hasher = await ethers.getContractFactory('Hasher')
+    const hasher = await Hasher.deploy()
+    await hasher.deployed()
+    ```
+  </Step>
+
+  <Step title="Deploy TornadoPool Implementation">
+    Deploy the main TornadoPool logic contract:
+
+    ```javascript
+    const Pool = await ethers.getContractFactory('TornadoPool')
+    const tornadoImpl = await Pool.deploy(
+      verifier2.address,
+      verifier16.address,
+      MERKLE_TREE_HEIGHT,
+      hasher.address,
+      token,
+      omniBridge,
+      l1Unwrapper,
+      govAddress,
+      l1ChainId,
+      multisig
+    )
+    ```
+
+    Constructor parameters:
+    - `verifier2`, `verifier16`: Proof verifier addresses
+    - `MERKLE_TREE_HEIGHT`: Merkle tree depth (23 = 8M leaves)
+    - `hasher`: Poseidon hasher address
+    - `token`: Wrapped token on L2 (e.g., WETH on Gnosis)
+    - `omniBridge`: OmniBridge address on L2
+    - `l1Unwrapper`: L1Unwrapper address from L1 deployment
+    - `govAddress`: L1 governance contract address
+    - `l1ChainId`: Chain ID of L1 network (1 for mainnet)
+    - `multisig`: L2 multisig for emergency operations
+  </Step>
+
+  <Step title="Deploy CrossChainUpgradeableProxy">
+    Deploy the upgradeable proxy with cross-chain governance:
+
+    ```javascript
+    const CrossChainUpgradeableProxy = await ethers.getContractFactory(
+      'CrossChainUpgradeableProxy'
+    )
+    const proxy = await CrossChainUpgradeableProxy.deploy(
+      tornadoImpl.address,
+      govAddress,
+      [],
+      amb,
+      l1ChainId
+    )
+    ```
+
+    Parameters:
+    - `tornadoImpl.address`: Implementation contract address
+    - `govAddress`: L1 governance address (admin)
+    - `[]`: Empty initialization data (will initialize separately)
+    - `amb`: AMB bridge address on L2
+    - `l1ChainId`: L1 chain ID for cross-chain verification
+  </Step>
+
+  <Step title="Initialize TornadoPool">
+    Initialize the pool through the proxy with deposit limits:
+
+    ```javascript
+    const tornadoPool = await Pool.attach(proxy.address)
+    await tornadoPool.initialize(
+      utils.parseEther(MINIMUM_WITHDRAWAL_AMOUNT),
+      utils.parseEther(MAXIMUM_DEPOSIT_AMOUNT)
+    )
+    ```
+
+    Set via environment variables:
+    ```bash
+    MINIMUM_WITHDRAWAL_AMOUNT=0.5
+    MAXIMUM_DEPOSIT_AMOUNT=100
+    ```
+  </Step>
+</Steps>
+
+## Deployment Script
+
+Run the complete deployment:
+
+```bash
+MINIMUM_WITHDRAWAL_AMOUNT=0.5 MAXIMUM_DEPOSIT_AMOUNT=100 \
+  npx hardhat run scripts/deployTornado.js --network xdai
+```
+
+The script outputs all deployed addresses:
+
+```
+verifier2: 0x...
+verifier16: 0x...
+hasher: 0x...
+TornadoPool implementation address: 0x...
+proxy address: 0x...
+Proxy initialized with MINIMUM_WITHDRAWAL_AMOUNT=0.5 ETH and MAXIMUM_DEPOSIT_AMOUNT=100 ETH
+```
+
+<Note>
+Save all deployed addresses for future reference and verification.
+</Note>
+
+## TornadoPool Architecture
+
+### UTXO Model
+
+TornadoPool uses a UTXO (Unspent Transaction Output) model similar to Bitcoin:
+
+- Each deposit creates new UTXOs (commitments)
+- Transactions consume input UTXOs and create output UTXOs
+- Zero-knowledge proofs hide the relationship between inputs and outputs
+
+### Merkle Tree
+
+All commitments are stored in a Merkle tree:
+
+- **Height**: 23 levels (supports ~8.4 million notes)
+- **Hasher**: Poseidon hash function (ZK-friendly)
+- **Root history**: Recent roots stored for proof validation
+
+### Cross-Chain Governance
+
+The CrossChainUpgradeableProxy enables L1 governance to control the L2 contract:
+
+```solidity contracts/CrossChainUpgradeableProxy.sol
+contract CrossChainUpgradeableProxy is 
+  TransparentUpgradeableProxy, 
+  CrossChainGuard 
+{
+  modifier ifAdmin() override {
+    if (isCalledByOwner()) {
+      _;
+    } else {
+      _fallback();
+    }
+  }
+}
+```
+
+The `isCalledByOwner()` check verifies:
+
+```solidity contracts/bridge/CrossChainGuard.sol
+function isCalledByOwner() public virtual returns (bool) {
+  return
+    msg.sender == address(ambBridge) &&
+    ambBridge.messageSourceChainId() == ownerChainId &&
+    ambBridge.messageSender() == owner;
+}
+```
+
+## Upgrading with CREATE2
+
+To deploy an upgraded implementation with deterministic address:
+
+```bash
+npx hardhat run scripts/deployTornadoUpgrade.js --network xdai
+```
+
+This script:
+
+1. Generates deterministic address using CREATE2
+2. Checks if already deployed
+3. Deploys via SingletonFactory with salt
+4. Uses 5M gas limit for complex contracts
+
+The upgraded implementation address can then be set via governance.
+
+## Network Configuration
+
+Configure Hardhat for L2 networks:
+
+```javascript hardhat.config.js
+module.exports = {
+  networks: {
+    xdai: {
+      url: process.env.ETH_RPC || 'https://rpc.xdaichain.com/',
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : {
+        mnemonic: 'test test test test test test test test test test test junk',
+      },
+      gasPrice: 25000000000,
+    },
+  },
+}
+```
+
+## Verification
+
+Verify all deployed contracts:
+
+```bash
+# Verifier contracts
+npx hardhat verify --network xdai <VERIFIER2_ADDRESS>
+npx hardhat verify --network xdai <VERIFIER16_ADDRESS>
+
+# Hasher
+npx hardhat verify --network xdai <HASHER_ADDRESS>
+
+# TornadoPool implementation
+npx hardhat verify --network xdai <IMPLEMENTATION_ADDRESS> \
+  <VERIFIER2> <VERIFIER16> 23 <HASHER> <TOKEN> \
+  <OMNIBRIDGE> <L1_UNWRAPPER> <GOVERNANCE> 1 <MULTISIG>
+
+# Proxy
+npx hardhat verify --network xdai <PROXY_ADDRESS> \
+  <IMPLEMENTATION> <GOVERNANCE> [] <AMB> 1
+```
+
+<Warning>
+The proxy address is the main contract address users will interact with. Ensure this is communicated clearly in documentation and UIs.
+</Warning>
+
+## Troubleshooting
+
+### Hasher Compilation Failed
+
+- Run `npx hardhat hasher` before deployment
+- Check that `scripts/compileHasher.js` exists
+- Ensure circomlibjs dependencies are installed
+
+### Initialization Failed
+
+- Verify `MINIMUM_WITHDRAWAL_AMOUNT` ≥ 0.5 ETH (MIN_EXT_AMOUNT_LIMIT)
+- Check that proxy was deployed successfully
+- Ensure no other transaction initialized the proxy
+
+### Upgrade Deployment Failed
+
+- Confirm salt and constructor args match original deployment
+- Check SingletonFactory has sufficient permissions
+- Verify gas limit is sufficient (5M recommended)

@@ -1,0 +1,509 @@
+---
+title: How it works
+description: Understanding the privacy mechanisms, UTXO model, and zero-knowledge proofs in Tornado Nova
+---
+
+# How Tornado Nova works
+
+Tornado Nova achieves privacy through a combination of cryptographic commitments, zero-knowledge proofs, and a UTXO-based transaction model. This page explains the core mechanisms that make private transactions possible.
+
+## The UTXO model
+
+Unlike Ethereum's account-based model, Tornado Nova uses **Unspent Transaction Outputs (UTXOs)** similar to Bitcoin. Each UTXO represents a specific amount of tokens owned by a user, but this ownership is hidden through cryptographic commitments.
+
+### UTXO structure
+
+A UTXO consists of three components:
+
+- **Amount**: The value stored in this UTXO
+- **Keypair**: Public key (for receiving) and private key (for spending)
+- **Blinding factor**: Random value to hide the commitment
+
+```javascript
+class Utxo {
+  constructor({ amount = 0, keypair = new Keypair(), blinding = randomBN(), index = null } = {}) {
+    this.amount = BigNumber.from(amount)
+    this.blinding = BigNumber.from(blinding)
+    this.keypair = keypair
+    this.index = index  // Position in the Merkle tree
+  }
+}
+```
+
+### Commitments and nullifiers
+
+Each UTXO generates two critical values:
+
+#### 1. Commitment
+
+A commitment is a cryptographic hash that hides the UTXO details but allows the owner to prove ownership later:
+
+```javascript
+getCommitment() {
+  return poseidonHash([this.amount, this.keypair.pubkey, this.blinding])
+}
+```
+
+Commitments are stored publicly in a Merkle tree. They reveal nothing about:
+- The amount
+- The owner
+- The relationship to other commitments
+
+#### 2. Nullifier
+
+A nullifier is a unique identifier that marks a UTXO as spent without revealing which commitment was spent:
+
+```javascript
+getNullifier() {
+  const signature = this.keypair.sign(this.getCommitment(), this.index || 0)
+  return poseidonHash([this.getCommitment(), this.index || 0, signature])
+}
+```
+
+<Info>
+Only the private key owner can compute a valid nullifier. The smart contract checks nullifiers to prevent double-spending without learning which UTXO was consumed.
+</Info>
+
+## Transaction flow
+
+Every Tornado Nova transaction follows this sequence:
+
+### 1. Prepare inputs and outputs
+
+A transaction can have:
+- **2 or 16 input UTXOs** (existing commitments to spend)
+- **Exactly 2 output UTXOs** (new commitments to create)
+
+```javascript
+async function prepareTransaction({
+  tornadoPool,
+  inputs = [],
+  outputs = [],
+  fee = 0,
+  recipient = 0,
+  relayer = 0
+}) {
+  // Pad inputs to 2 or 16 (dummy UTXOs with zero amount)
+  while (inputs.length !== 2 && inputs.length < 16) {
+    inputs.push(new Utxo())
+  }
+  
+  // Always have exactly 2 outputs (use dummy UTXOs if needed)
+  while (outputs.length < 2) {
+    outputs.push(new Utxo())
+  }
+  
+  // Calculate external amount (positive = deposit, negative = withdrawal)
+  let extAmount = BigNumber.from(fee)
+    .add(outputs.reduce((sum, x) => sum.add(x.amount), BigNumber.from(0)))
+    .sub(inputs.reduce((sum, x) => sum.add(x.amount), BigNumber.from(0)))
+    
+  // Generate proof and external data
+  return await getProof({ inputs, outputs, extAmount, fee, recipient, relayer })
+}
+```
+
+### 2. Build the Merkle tree
+
+The prover needs to prove that input commitments exist in the pool. This requires building a Merkle tree of all commitments:
+
+```javascript
+async function buildMerkleTree({ tornadoPool }) {
+  const filter = tornadoPool.filters.NewCommitment()
+  const events = await tornadoPool.queryFilter(filter, 0)
+  
+  const leaves = events
+    .sort((a, b) => a.args.index - b.args.index)
+    .map((e) => toFixedHex(e.args.commitment))
+    
+  return new MerkleTree(MERKLE_TREE_HEIGHT, leaves, { 
+    hashFunction: poseidonHash2 
+  })
+}
+```
+
+<Note>
+The Merkle tree has a fixed height of 5 levels by default, supporting up to 2^5 = 32 commitments.
+</Note>
+
+### 3. Generate the zero-knowledge proof
+
+The most critical step: prove transaction validity without revealing sensitive data.
+
+```javascript
+async function getProof({
+  inputs,
+  outputs,
+  tree,
+  extAmount,
+  fee,
+  recipient,
+  relayer
+}) {
+  // Get Merkle paths for each input
+  let inputMerklePathIndices = []
+  let inputMerklePathElements = []
+  
+  for (const input of inputs) {
+    if (input.amount > 0) {
+      input.index = tree.indexOf(toFixedHex(input.getCommitment()))
+      inputMerklePathIndices.push(input.index)
+      inputMerklePathElements.push(tree.path(input.index).pathElements)
+    } else {
+      inputMerklePathIndices.push(0)
+      inputMerklePathElements.push(new Array(tree.levels).fill(0))
+    }
+  }
+  
+  // Prepare proof inputs
+  let proofInput = {
+    root: tree.root(),
+    inputNullifier: inputs.map((x) => x.getNullifier()),
+    outputCommitment: outputs.map((x) => x.getCommitment()),
+    publicAmount: BigNumber.from(extAmount).sub(fee),
+    
+    // Private inputs
+    inAmount: inputs.map((x) => x.amount),
+    inPrivateKey: inputs.map((x) => x.keypair.privkey),
+    inBlinding: inputs.map((x) => x.blinding),
+    inPathIndices: inputMerklePathIndices,
+    inPathElements: inputMerklePathElements,
+    
+    // Output data
+    outAmount: outputs.map((x) => x.amount),
+    outBlinding: outputs.map((x) => x.blinding),
+    outPubkey: outputs.map((x) => x.keypair.pubkey)
+  }
+  
+  // Generate zkSNARK proof
+  const proof = await prove(proofInput, `./artifacts/circuits/transaction${inputs.length}`)
+  
+  return { proof, args: { ... } }
+}
+```
+
+### 4. Submit the transaction
+
+The contract verifies the proof and updates state:
+
+```solidity
+function _transact(Proof memory _args, ExtData memory _extData) internal nonReentrant {
+  // 1. Verify Merkle root is valid (from recent history)
+  require(isKnownRoot(_args.root), "Invalid merkle root");
+  
+  // 2. Check nullifiers haven't been used before
+  for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+    require(!isSpent(_args.inputNullifiers[i]), "Input is already spent");
+  }
+  
+  // 3. Verify external data hash matches
+  require(
+    uint256(_args.extDataHash) == uint256(keccak256(abi.encode(_extData))) % FIELD_SIZE,
+    "Incorrect external data hash"
+  );
+  
+  // 4. Verify public amount calculation
+  require(
+    _args.publicAmount == calculatePublicAmount(_extData.extAmount, _extData.fee),
+    "Invalid public amount"
+  );
+  
+  // 5. Verify the zkSNARK proof
+  require(verifyProof(_args), "Invalid transaction proof");
+  
+  // 6. Mark nullifiers as spent
+  for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+    nullifierHashes[_args.inputNullifiers[i]] = true;
+  }
+  
+  // 7. Process deposits/withdrawals
+  if (_extData.extAmount < 0) {
+    require(_extData.recipient != address(0), "Can't withdraw to zero address");
+    token.transfer(_extData.recipient, uint256(-_extData.extAmount));
+  }
+  if (_extData.fee > 0) {
+    token.transfer(_extData.relayer, _extData.fee);
+  }
+  
+  // 8. Insert new commitments into Merkle tree
+  _insert(_args.outputCommitments[0], _args.outputCommitments[1]);
+  
+  // 9. Emit events for users to track their UTXOs
+  emit NewCommitment(_args.outputCommitments[0], nextIndex - 2, _extData.encryptedOutput1);
+  emit NewCommitment(_args.outputCommitments[1], nextIndex - 1, _extData.encryptedOutput2);
+  
+  for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+    emit NewNullifier(_args.inputNullifiers[i]);
+  }
+}
+```
+
+## The zkSNARK proof
+
+The zero-knowledge proof demonstrates the following statements are true without revealing private data:
+
+### What the proof proves
+
+1. **Membership**: Each input commitment exists in the Merkle tree
+2. **Ownership**: The prover knows the private key for each input
+3. **Consistency**: Nullifiers are correctly computed from commitments
+4. **Balance**: `sum(inputs) = sum(outputs) + publicAmount + fee`
+5. **Well-formedness**: All values are valid field elements
+
+### What remains hidden
+
+- Input amounts
+- Output amounts
+- Which commitments were spent (only nullifiers are revealed)
+- Relationships between inputs and outputs
+- The keypairs involved
+
+### Verifier contracts
+
+Tornado Nova uses two separate verifier contracts:
+
+```solidity
+function verifyProof(Proof memory _args) public view returns (bool) {
+  if (_args.inputNullifiers.length == 2) {
+    // Use 2-input verifier for simple transactions
+    return verifier2.verifyProof(
+      _args.proof,
+      [
+        uint256(_args.root),
+        _args.publicAmount,
+        uint256(_args.extDataHash),
+        uint256(_args.inputNullifiers[0]),
+        uint256(_args.inputNullifiers[1]),
+        uint256(_args.outputCommitments[0]),
+        uint256(_args.outputCommitments[1])
+      ]
+    );
+  } else if (_args.inputNullifiers.length == 16) {
+    // Use 16-input verifier for UTXO consolidation
+    return verifier16.verifyProof(_args.proof, [...]);
+  }
+}
+```
+
+<Info>
+The 16-input verifier allows users to consolidate many small UTXOs into larger ones, improving efficiency.
+</Info>
+
+## Privacy guarantees
+
+### Anonymity set
+
+Your privacy depends on the size of the anonymity set—the group of users you could be:
+
+- **Deposits**: Your anonymity set includes all users who have ever deposited
+- **Shielded transfers**: Your anonymity set includes all users with active UTXOs
+- **Withdrawals**: Timing analysis is the main risk; use relayers to mitigate
+
+### Encrypted outputs
+
+Recipients need to know they received funds. Outputs are encrypted to the recipient's public key:
+
+```javascript
+encrypt() {
+  const bytes = Buffer.concat([
+    toBuffer(this.amount, 31),
+    toBuffer(this.blinding, 31)
+  ])
+  return this.keypair.encrypt(bytes)
+}
+```
+
+Users scan `NewCommitment` events and attempt to decrypt each encrypted output:
+
+```javascript
+static decrypt(keypair, data, index) {
+  const buf = keypair.decrypt(data)
+  return new Utxo({
+    amount: BigNumber.from('0x' + buf.slice(0, 31).toString('hex')),
+    blinding: BigNumber.from('0x' + buf.slice(31, 62).toString('hex')),
+    keypair,
+    index
+  })
+}
+```
+
+## Merkle tree implementation
+
+The contract maintains a Merkle tree of all commitments using the Poseidon hash function:
+
+```solidity
+function _insert(bytes32 _leaf1, bytes32 _leaf2) internal returns (uint32 index) {
+  uint32 _nextIndex = nextIndex;
+  require(_nextIndex != uint32(2)**levels, "Merkle tree is full");
+  
+  uint32 currentIndex = _nextIndex / 2;
+  bytes32 currentLevelHash = hashLeftRight(_leaf1, _leaf2);
+  bytes32 left;
+  bytes32 right;
+  
+  // Update tree by hashing up to the root
+  for (uint32 i = 1; i < levels; i++) {
+    if (currentIndex % 2 == 0) {
+      left = currentLevelHash;
+      right = zeros(i);
+      filledSubtrees[i] = currentLevelHash;
+    } else {
+      left = filledSubtrees[i];
+      right = currentLevelHash;
+    }
+    currentLevelHash = hashLeftRight(left, right);
+    currentIndex /= 2;
+  }
+  
+  // Store new root in circular buffer
+  uint32 newRootIndex = (currentRootIndex + 1) % ROOT_HISTORY_SIZE;
+  currentRootIndex = newRootIndex;
+  roots[newRootIndex] = currentLevelHash;
+  nextIndex = _nextIndex + 2;
+  return _nextIndex;
+}
+```
+
+<Note>
+The contract stores the last 100 Merkle roots, allowing multiple transactions to be in flight simultaneously using slightly stale roots.
+</Note>
+
+### Poseidon hashing
+
+Tornado Nova uses Poseidon instead of Keccak256 because Poseidon is **SNARK-friendly**:
+
+```solidity
+function hashLeftRight(bytes32 _left, bytes32 _right) public view returns (bytes32) {
+  require(uint256(_left) < FIELD_SIZE, "_left should be inside the field");
+  require(uint256(_right) < FIELD_SIZE, "_right should be inside the field");
+  bytes32[2] memory input;
+  input[0] = _left;
+  input[1] = _right;
+  return hasher.poseidon(input);
+}
+```
+
+## Cross-chain bridge flow
+
+### Depositing from L1 to L2
+
+1. User calls OmniBridge on L1 with ETH and encoded transaction data
+2. Bridge locks ETH on L1 and sends message to L2
+3. OmniBridge on L2 mints wrapped ETH and calls `onTokenBridged`
+4. TornadoPool processes the deposit and adds commitments
+
+```solidity
+function onTokenBridged(
+  IERC6777 _token,
+  uint256 _amount,
+  bytes calldata _data
+) external override {
+  (Proof memory _args, ExtData memory _extData) = abi.decode(_data, (Proof, ExtData));
+  require(_token == token, "provided token is not supported");
+  require(msg.sender == omniBridge, "only omni bridge");
+  require(_amount >= uint256(_extData.extAmount), "amount from bridge is incorrect");
+  require(
+    token.balanceOf(address(this)) >= uint256(_extData.extAmount) + lastBalance,
+    "bridge did not send enough tokens"
+  );
+  
+  uint256 sentAmount = token.balanceOf(address(this)) - lastBalance;
+  try TornadoPool(address(this)).onTransact(_args, _extData) {} 
+  catch (bytes memory) {
+    // If transaction fails, send tokens to multisig for manual recovery
+    token.transfer(multisig, sentAmount);
+  }
+}
+```
+
+### Withdrawing from L2 to L1
+
+1. User creates transaction with `isL1Withdrawal = true`
+2. TornadoPool sends tokens to OmniBridge with L1 unwrapper data
+3. Bridge sends message to L1
+4. L1Unwrapper receives wrapped ETH and unwraps to native ETH
+5. Native ETH is sent to recipient address
+
+```solidity
+if (_extData.extAmount < 0) {
+  require(_extData.recipient != address(0), "Can't withdraw to zero address");
+  if (_extData.isL1Withdrawal) {
+    token.transferAndCall(
+      omniBridge,
+      uint256(-_extData.extAmount),
+      abi.encodePacked(l1Unwrapper, abi.encode(_extData.recipient, _extData.l1Fee))
+    );
+  } else {
+    token.transfer(_extData.recipient, uint256(-_extData.extAmount));
+  }
+}
+```
+
+<Warning>
+L1 withdrawals must be at least 0.05 ETH to prevent spam attacks on the bridge infrastructure.
+</Warning>
+
+## Security considerations
+
+### Double-spend prevention
+
+Nullifiers ensure each UTXO can only be spent once:
+
+```solidity
+mapping(bytes32 => bool) public nullifierHashes;
+
+for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+  require(!isSpent(_args.inputNullifiers[i]), "Input is already spent");
+}
+// ... verify proof ...
+for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+  nullifierHashes[_args.inputNullifiers[i]] = true;
+}
+```
+
+### Root history
+
+The contract maintains 100 recent roots to prevent front-running issues:
+
+```solidity
+function isKnownRoot(bytes32 _root) public view returns (bool) {
+  if (_root == 0) return false;
+  
+  uint32 _currentRootIndex = currentRootIndex;
+  uint32 i = _currentRootIndex;
+  do {
+    if (_root == roots[i]) return true;
+    if (i == 0) i = ROOT_HISTORY_SIZE;
+    i--;
+  } while (i != _currentRootIndex);
+  return false;
+}
+```
+
+<Info>
+Users can generate proofs using any of the last 100 roots, providing a window for transaction submission even as new commitments are added.
+</Info>
+
+### Reentrancy protection
+
+All state-changing functions use OpenZeppelin's `ReentrancyGuard`:
+
+```solidity
+function _transact(Proof memory _args, ExtData memory _extData) 
+  internal 
+  nonReentrant 
+{
+  // ... transaction logic ...
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Start building" icon="code" href="/developer/installation">
+    Integrate Tornado Nova into your application
+  </Card>
+  <Card title="API reference" icon="book" href="/api/tornado-pool-api">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>

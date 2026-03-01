@@ -1,0 +1,275 @@
+---
+title: Zero-knowledge proofs
+description: Understanding the SNARK-based proof system that enables private transactions
+---
+
+Tornado Nova uses zero-knowledge SNARKs (Succinct Non-interactive Arguments of Knowledge) to prove transaction validity without revealing sensitive information. The system proves that inputs exist in the commitment tree, outputs are correctly formed, and amounts balance, all while keeping amounts and ownership private.
+
+## Proof system overview
+
+The protocol uses Groth16 SNARKs compiled from Circom circuits. Each transaction generates a proof that validates:
+
+<Steps>
+  <Step title="Input ownership">
+    The sender knows the private keys for all input UTXOs by computing valid signatures.
+  </Step>
+  
+  <Step title="Merkle membership">
+    All input commitments exist in the Merkle tree at the claimed root.
+  </Step>
+  
+  <Step title="Correct nullifiers">
+    Input nullifiers are computed correctly from commitments, indices, and signatures.
+  </Step>
+  
+  <Step title="Output commitments">
+    Output commitments are correctly formed from amounts, public keys, and blinding factors.
+  </Step>
+  
+  <Step title="Amount balance">
+    Total input value plus public amount equals total output value.
+  </Step>
+</Steps>
+
+## Circuit structure
+
+The main transaction circuit is parameterized by the number of inputs:
+
+```circom circuits/transaction.circom
+// Universal JoinSplit transaction with nIns inputs and 2 outputs
+template Transaction(levels, nIns, nOuts, zeroLeaf) {
+    signal input root;
+    signal input publicAmount;
+    signal input extDataHash;
+
+    // data for transaction inputs
+    signal         input inputNullifier[nIns];
+    signal private input inAmount[nIns];
+    signal private input inPrivateKey[nIns];
+    signal private input inBlinding[nIns];
+    signal private input inPathIndices[nIns];
+    signal private input inPathElements[nIns][levels];
+
+    // data for transaction outputs
+    signal         input outputCommitment[nOuts];
+    signal private input outAmount[nOuts];
+    signal private input outPubkey[nOuts];
+    signal private input outBlinding[nOuts];
+}
+```
+
+<Note>
+Signals marked with `private` are not revealed in the proof, while public signals must match values submitted on-chain. This separation is what enables zero-knowledge privacy.
+</Note>
+
+## Input verification
+
+For each input UTXO, the circuit performs a complete verification:
+
+```circom circuits/transaction.circom
+for (var tx = 0; tx < nIns; tx++) {
+    inKeypair[tx] = Keypair();
+    inKeypair[tx].privateKey <== inPrivateKey[tx];
+
+    inCommitmentHasher[tx] = Poseidon(3);
+    inCommitmentHasher[tx].inputs[0] <== inAmount[tx];
+    inCommitmentHasher[tx].inputs[1] <== inKeypair[tx].publicKey;
+    inCommitmentHasher[tx].inputs[2] <== inBlinding[tx];
+
+    inSignature[tx] = Signature();
+    inSignature[tx].privateKey <== inPrivateKey[tx];
+    inSignature[tx].commitment <== inCommitmentHasher[tx].out;
+    inSignature[tx].merklePath <== inPathIndices[tx];
+
+    inNullifierHasher[tx] = Poseidon(3);
+    inNullifierHasher[tx].inputs[0] <== inCommitmentHasher[tx].out;
+    inNullifierHasher[tx].inputs[1] <== inPathIndices[tx];
+    inNullifierHasher[tx].inputs[2] <== inSignature[tx].out;
+    inNullifierHasher[tx].out === inputNullifier[tx];
+}
+```
+
+This proves:
+1. The prover knows the private key (derives correct public key)
+2. The commitment matches the claimed amount, public key, and blinding
+3. The signature is valid over the commitment and Merkle path
+4. The nullifier is correctly computed
+
+## Merkle tree verification
+
+The circuit verifies each input commitment exists in the tree:
+
+```circom circuits/transaction.circom
+inTree[tx] = MerkleProof(levels);
+inTree[tx].leaf <== inCommitmentHasher[tx].out;
+inTree[tx].pathIndices <== inPathIndices[tx];
+for (var i = 0; i < levels; i++) {
+    inTree[tx].pathElements[i] <== inPathElements[tx][i];
+}
+
+// check merkle proof only if amount is non-zero
+inCheckRoot[tx] = ForceEqualIfEnabled();
+inCheckRoot[tx].in[0] <== root;
+inCheckRoot[tx].in[1] <== inTree[tx].root;
+inCheckRoot[tx].enabled <== inAmount[tx];
+```
+
+<Warning>
+The Merkle proof is only enforced for non-zero amounts. Zero-amount UTXOs can have invalid Merkle paths, allowing them to be used as dummy inputs without consuming real commitments.
+</Warning>
+
+## Output verification
+
+Output commitments must be correctly formed and amounts must fit in valid ranges:
+
+```circom circuits/transaction.circom
+for (var tx = 0; tx < nOuts; tx++) {
+    outCommitmentHasher[tx] = Poseidon(3);
+    outCommitmentHasher[tx].inputs[0] <== outAmount[tx];
+    outCommitmentHasher[tx].inputs[1] <== outPubkey[tx];
+    outCommitmentHasher[tx].inputs[2] <== outBlinding[tx];
+    outCommitmentHasher[tx].out === outputCommitment[tx];
+
+    // Check that amount fits into 248 bits to prevent overflow
+    outAmountCheck[tx] = Num2Bits(248);
+    outAmountCheck[tx].in <== outAmount[tx];
+
+    sumOuts += outAmount[tx];
+}
+```
+
+The 248-bit constraint prevents overflow attacks when amounts are used in the smart contract:
+
+```solidity contracts/TornadoPool.sol
+int256 public constant MAX_EXT_AMOUNT = 2**248;
+uint256 public constant MAX_FEE = 2**248;
+```
+
+## Amount conservation
+
+The fundamental security property enforced by the circuit:
+
+```circom circuits/transaction.circom
+// verify amount invariant
+sumIns + publicAmount === sumOuts;
+```
+
+This ensures no value is created or destroyed. The smart contract verifies that `publicAmount` matches the external data:
+
+```solidity contracts/TornadoPool.sol
+require(_args.publicAmount == calculatePublicAmount(_extData.extAmount, _extData.fee), "Invalid public amount");
+```
+
+## Nullifier uniqueness
+
+The circuit enforces that no input uses the same nullifier twice within a transaction:
+
+```circom circuits/transaction.circom
+// check that there are no same nullifiers among all inputs
+component sameNullifiers[nIns * (nIns - 1) / 2];
+var index = 0;
+for (var i = 0; i < nIns - 1; i++) {
+  for (var j = i + 1; j < nIns; j++) {
+      sameNullifiers[index] = IsEqual();
+      sameNullifiers[index].in[0] <== inputNullifier[i];
+      sameNullifiers[index].in[1] <== inputNullifier[j];
+      sameNullifiers[index].out === 0;
+      index++;
+  }
+}
+```
+
+The smart contract checks that nullifiers haven't been used in any previous transaction:
+
+```solidity contracts/TornadoPool.sol
+for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+    require(!isSpent(_args.inputNullifiers[i]), "Input is already spent");
+}
+```
+
+## External data binding
+
+The proof is bound to external transaction data (recipient, relayer, fees) through a hash:
+
+```circom circuits/transaction.circom
+// optional safety constraint to make sure extDataHash cannot be changed
+signal extDataSquare <== extDataHash * extDataHash;
+```
+
+The smart contract verifies this binding:
+
+```solidity contracts/TornadoPool.sol
+require(uint256(_args.extDataHash) == uint256(keccak256(abi.encode(_extData))) % FIELD_SIZE, "Incorrect external data hash");
+```
+
+<Note>
+Binding the proof to the external data hash prevents relay attacks where an attacker could intercept a proof and change the recipient or relayer addresses.
+</Note>
+
+## Verifier contracts
+
+Tornado Nova deploys two separate verifier contracts for different input counts:
+
+```solidity contracts/TornadoPool.sol
+IVerifier public immutable verifier2;
+IVerifier public immutable verifier16;
+
+function verifyProof(Proof memory _args) public view returns (bool) {
+    if (_args.inputNullifiers.length == 2) {
+        return
+            verifier2.verifyProof(
+                _args.proof,
+                [
+                    uint256(_args.root),
+                    _args.publicAmount,
+                    uint256(_args.extDataHash),
+                    uint256(_args.inputNullifiers[0]),
+                    uint256(_args.inputNullifiers[1]),
+                    uint256(_args.outputCommitments[0]),
+                    uint256(_args.outputCommitments[1])
+                ]
+            );
+    } else if (_args.inputNullifiers.length == 16) {
+        return
+            verifier16.verifyProof(
+                _args.proof,
+                [
+                    uint256(_args.root),
+                    _args.publicAmount,
+                    uint256(_args.extDataHash),
+                    uint256(_args.inputNullifiers[0]),
+                    // ... all 16 nullifiers
+                    uint256(_args.outputCommitments[0]),
+                    uint256(_args.outputCommitments[1])
+                ]
+            );
+    } else {
+        revert("unsupported input count");
+    }
+}
+```
+
+The 2-input verifier is used for most transactions, while the 16-input verifier allows users to consolidate many small UTXOs into fewer larger ones.
+
+## Proof generation
+
+Proof generation happens client-side using the compiled circuit and proving key. The process:
+
+1. Gather all private inputs (amounts, keys, blinding factors, Merkle paths)
+2. Compute public inputs (nullifiers, commitments, root, public amount)
+3. Generate witness (all signal values that satisfy the circuit)
+4. Create the SNARK proof using the witness and proving key
+5. Submit proof and public inputs to the smart contract
+
+<Warning>
+Proof generation for 16-input transactions requires significant computational resources and can take several minutes. Users should generate proofs on powerful machines or use a proving service.
+</Warning>
+
+## Security properties
+
+The zero-knowledge proof system guarantees:
+
+- **Completeness**: Valid transactions always produce accepting proofs
+- **Soundness**: Invalid transactions cannot produce accepting proofs (assuming cryptographic security)
+- **Zero-knowledge**: The proof reveals nothing about private inputs beyond what's necessary to validate the transaction
+- **Non-malleability**: Proofs cannot be modified or reused for different transactions due to the external data hash binding

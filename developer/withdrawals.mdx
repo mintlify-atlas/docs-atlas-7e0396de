@@ -1,0 +1,334 @@
+---
+title: Withdrawing Funds
+description: Withdraw funds from Tornado Nova pool to L1 or L2 addresses
+---
+
+## Overview
+
+Withdrawals allow users to exit the pool and receive tokens at a specified recipient address. A withdrawal is identified by a negative `extAmount` value and can target either L1 (via bridge) or L2 (direct transfer).
+
+## Withdrawal Types
+
+Tornado Nova supports two withdrawal destinations:
+
+- **L2 Withdrawal**: Direct token transfer to recipient on L2
+- **L1 Withdrawal**: Bridged transfer to recipient on L1 using OmniBridge
+
+## Withdrawal Process
+
+<Steps>
+  <Step title="Select input UTXOs">
+    Choose UTXOs with sufficient balance to cover withdrawal amount and fees.
+  </Step>
+  
+  <Step title="Create output UTXOs">
+    Generate change outputs if needed (always 2 outputs total).
+  </Step>
+  
+  <Step title="Set recipient address">
+    Specify the destination address for withdrawn funds.
+  </Step>
+  
+  <Step title="Generate ZK proof">
+    Create proof validating the withdrawal without revealing UTXO details.
+  </Step>
+  
+  <Step title="Submit transaction">
+    Call `transact` with negative `extAmount` to withdraw.
+  </Step>
+</Steps>
+
+## Withdrawal Detection
+
+The contract identifies a withdrawal when `extAmount < 0`:
+
+```solidity contracts/TornadoPool.sol
+if (_extData.extAmount < 0) {
+  require(_extData.recipient != address(0), "Can't withdraw to zero address");
+  if (_extData.isL1Withdrawal) {
+    token.transferAndCall(
+      omniBridge,
+      uint256(-_extData.extAmount),
+      abi.encodePacked(l1Unwrapper, abi.encode(_extData.recipient, _extData.l1Fee))
+    );
+  } else {
+    token.transfer(_extData.recipient, uint256(-_extData.extAmount));
+  }
+}
+```
+
+<Note>
+  The negative `extAmount` is converted to positive using `-_extData.extAmount` for the token transfer.
+</Note>
+
+## ExtAmount Calculation
+
+For withdrawals, `extAmount` is negative:
+
+```javascript src/index.js
+let extAmount = BigNumber.from(fee)
+  .add(outputs.reduce((sum, x) => sum.add(x.amount), BigNumber.from(0)))
+  .sub(inputs.reduce((sum, x) => sum.add(x.amount), BigNumber.from(0)))
+```
+
+**Example:**
+- Input: 100 tokens
+- Output: 10 tokens (change)
+- Fee: 1 token
+- **Result**: `extAmount = 10 + 1 - 100 = -89` (89 tokens withdrawn)
+
+## L2 Withdrawal
+
+Direct withdrawal to an address on the same chain:
+
+```solidity contracts/TornadoPool.sol
+token.transfer(_extData.recipient, uint256(-_extData.extAmount));
+```
+
+**Parameters:**
+```javascript
+{
+  recipient: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  isL1Withdrawal: false,
+  l1Fee: 0
+}
+```
+
+<Note>
+  L2 withdrawals are simple token transfers and have lower gas costs.
+</Note>
+
+## L1 Withdrawal
+
+Bridged withdrawal to an address on L1:
+
+```solidity contracts/TornadoPool.sol
+token.transferAndCall(
+  omniBridge,
+  uint256(-_extData.extAmount),
+  abi.encodePacked(l1Unwrapper, abi.encode(_extData.recipient, _extData.l1Fee))
+);
+```
+
+**Parameters:**
+```javascript
+{
+  recipient: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  isL1Withdrawal: true,
+  l1Fee: ethers.utils.parseEther('0.01')
+}
+```
+
+<Warning>
+  L1 withdrawals require an additional `l1Fee` to cover the gas costs on L1. This fee is deducted from the withdrawn amount.
+</Warning>
+
+## External Data Structure
+
+The withdrawal parameters are encoded in `ExtData`:
+
+```solidity contracts/TornadoPool.sol
+struct ExtData {
+  address recipient;
+  int256 extAmount;
+  address relayer;
+  uint256 fee;
+  bytes encryptedOutput1;
+  bytes encryptedOutput2;
+  bool isL1Withdrawal;
+  uint256 l1Fee;
+}
+```
+
+## Fee Handling
+
+Relayer fees are paid separately from the withdrawal:
+
+```solidity contracts/TornadoPool.sol
+if (_extData.fee > 0) {
+  token.transfer(_extData.relayer, _extData.fee);
+}
+```
+
+The total deduction from inputs:
+```
+total_spent = withdrawal_amount + relayer_fee
+```
+
+## Proof Arguments
+
+The withdrawal proof includes:
+
+```javascript src/index.js
+const args = {
+  proof,
+  root: toFixedHex(input.root),
+  inputNullifiers: inputs.map((x) => toFixedHex(x.getNullifier())),
+  outputCommitments: outputs.map((x) => toFixedHex(x.getCommitment())),
+  publicAmount: toFixedHex(input.publicAmount),
+  extDataHash: toFixedHex(extDataHash),
+}
+```
+
+## Nullifier Verification
+
+Withdrawals consume input UTXOs by revealing nullifiers:
+
+```solidity contracts/TornadoPool.sol
+for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+  require(!isSpent(_args.inputNullifiers[i]), "Input is already spent");
+}
+
+for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+  nullifierHashes[_args.inputNullifiers[i]] = true;
+}
+```
+
+<Warning>
+  Once nullifiers are marked as spent, the UTXOs cannot be used again. Ensure your withdrawal transaction succeeds.
+</Warning>
+
+## Public Amount
+
+The public amount for withdrawals:
+
+```solidity contracts/TornadoPool.sol
+function calculatePublicAmount(int256 _extAmount, uint256 _fee) public pure returns (uint256) {
+  require(_fee < MAX_FEE, "Invalid fee");
+  require(_extAmount > -MAX_EXT_AMOUNT && _extAmount < MAX_EXT_AMOUNT, "Invalid ext amount");
+  int256 publicAmount = _extAmount - int256(_fee);
+  return (publicAmount >= 0) ? uint256(publicAmount) : FIELD_SIZE - uint256(-publicAmount);
+}
+```
+
+For withdrawals:
+```
+publicAmount = extAmount - fee
+             = (-withdrawal_amount) - fee
+             = -(withdrawal_amount + fee) (mod FIELD_SIZE)
+```
+
+```javascript src/index.js
+publicAmount: BigNumber.from(extAmount).sub(fee).add(FIELD_SIZE).mod(FIELD_SIZE).toString(),
+```
+
+## Recipient Validation
+
+The contract requires a valid recipient:
+
+```solidity contracts/TornadoPool.sol
+require(_extData.recipient != address(0), "Can't withdraw to zero address");
+```
+
+<Warning>
+  Always validate the recipient address before submitting a withdrawal. Funds sent to incorrect addresses cannot be recovered.
+</Warning>
+
+## Complete Withdrawal Example
+
+Preparing a withdrawal transaction:
+
+```javascript src/index.js
+async function prepareTransaction({
+  tornadoPool,
+  inputs = [],
+  outputs = [],
+  fee = 0,
+  recipient = 0,
+  relayer = 0,
+  isL1Withdrawal = false,
+  l1Fee = 0,
+}) {
+  if (inputs.length > 16 || outputs.length > 2) {
+    throw new Error('Incorrect inputs/outputs count')
+  }
+  while (inputs.length !== 2 && inputs.length < 16) {
+    inputs.push(new Utxo())
+  }
+  while (outputs.length < 2) {
+    outputs.push(new Utxo())
+  }
+
+  let extAmount = BigNumber.from(fee)
+    .add(outputs.reduce((sum, x) => sum.add(x.amount), BigNumber.from(0)))
+    .sub(inputs.reduce((sum, x) => sum.add(x.amount), BigNumber.from(0)))
+
+  const { args, extData } = await getProof({
+    inputs,
+    outputs,
+    tree: await buildMerkleTree({ tornadoPool }),
+    extAmount,
+    fee,
+    recipient,
+    relayer,
+    isL1Withdrawal,
+    l1Fee,
+  })
+
+  return {
+    args,
+    extData,
+  }
+}
+```
+
+## Withdrawal Events
+
+Successful withdrawals emit events:
+
+```solidity contracts/TornadoPool.sol
+emit NewCommitment(_args.outputCommitments[0], nextIndex - 2, _extData.encryptedOutput1);
+emit NewCommitment(_args.outputCommitments[1], nextIndex - 1, _extData.encryptedOutput2);
+for (uint256 i = 0; i < _args.inputNullifiers.length; i++) {
+  emit NewNullifier(_args.inputNullifiers[i]);
+}
+```
+
+The `NewNullifier` events mark the spent UTXOs, while `NewCommitment` events contain any change outputs.
+
+## Balance Tracking
+
+The contract updates its balance after withdrawals:
+
+```solidity contracts/TornadoPool.sol
+lastBalance = token.balanceOf(address(this));
+```
+
+This ensures accurate tracking for subsequent bridge deposits.
+
+## Merkle Root Validation
+
+Withdrawals must prove against a known Merkle root:
+
+```solidity contracts/TornadoPool.sol
+require(isKnownRoot(_args.root), "Invalid merkle root");
+```
+
+<Note>
+  The Merkle root must be from a recent state. If too much time passes between building the proof and submission, the root may become invalid.
+</Note>
+
+## External Data Hash
+
+The proof commits to the external data:
+
+```solidity contracts/TornadoPool.sol
+require(uint256(_args.extDataHash) == uint256(keccak256(abi.encode(_extData))) % FIELD_SIZE, "Incorrect external data hash");
+```
+
+```javascript src/index.js
+const extData = {
+  recipient: toFixedHex(recipient, 20),
+  extAmount: toFixedHex(extAmount),
+  relayer: toFixedHex(relayer, 20),
+  fee: toFixedHex(fee),
+  encryptedOutput1: outputs[0].encrypt(),
+  encryptedOutput2: outputs[1].encrypt(),
+  isL1Withdrawal,
+  l1Fee,
+}
+
+const extDataHash = getExtDataHash(extData)
+```
+
+This prevents tampering with withdrawal parameters after proof generation.

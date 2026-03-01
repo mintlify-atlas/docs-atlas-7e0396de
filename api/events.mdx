@@ -1,0 +1,275 @@
+---
+title: "Contract Events Reference"
+description: "Complete reference for all events emitted by TornadoPool and L1Unwrapper contracts"
+---
+
+## Overview
+
+Events are critical for tracking state changes, building merkle trees, and decrypting user notes. This page documents all events emitted by the Tornado Nova contracts.
+
+## TornadoPool Events
+
+### NewCommitment
+
+```solidity
+event NewCommitment(bytes32 commitment, uint256 index, bytes encryptedOutput)
+```
+
+Emitted when a new commitment (UTXO) is added to the merkle tree. This event is emitted twice per transaction (once for each output).
+
+<ResponseField name="commitment" type="bytes32">
+  The commitment hash added to the merkle tree. Calculated as `poseidonHash(amount, pubkey, blinding)`
+</ResponseField>
+
+<ResponseField name="index" type="uint256">
+  Position of the commitment in the merkle tree. Used to calculate merkle path for spending the UTXO.
+</ResponseField>
+
+<ResponseField name="encryptedOutput" type="bytes">
+  Encrypted UTXO data (amount and blinding factor) that can be decrypted by the recipient using their private key. Format: 24 bytes nonce + 32 bytes ephemeral public key + ciphertext.
+</ResponseField>
+
+**Usage:** 
+- Frontend monitors this event to detect incoming transfers
+- Used to build and maintain the local merkle tree
+- Recipients decrypt encryptedOutput to discover their UTXOs
+
+**Source:** `contracts/TornadoPool.sol:67`
+
+**Emitted by:** `_transact()` at line 290-291
+
+---
+
+### NewNullifier
+
+```solidity
+event NewNullifier(bytes32 nullifier)
+```
+
+Emitted when a nullifier is spent (UTXO is consumed). Prevents double-spending by marking the UTXO as spent.
+
+<ResponseField name="nullifier" type="bytes32">
+  The nullifier hash that marks a UTXO as spent. Calculated as `poseidonHash(commitment, index, signature)` where signature = `poseidonHash(privkey, commitment, index)`
+</ResponseField>
+
+**Usage:**
+- Tracks which UTXOs have been spent
+- Prevents double-spending attempts
+- Frontend uses this to mark local UTXOs as spent
+
+**Source:** `contracts/TornadoPool.sol:68`
+
+**Emitted by:** `_transact()` at line 293 (emitted for each input nullifier)
+
+---
+
+### PublicKey
+
+```solidity
+event PublicKey(address indexed owner, bytes key)
+```
+
+Emitted when a user registers their public key in the system. Enables others to encrypt notes for this user.
+
+<ResponseField name="owner" type="address" indexed>
+  Ethereum address of the account owner. Indexed for efficient filtering.
+</ResponseField>
+
+<ResponseField name="key" type="bytes">
+  Public key bytes (64 bytes total):
+  - First 32 bytes: poseidon pubkey for signature verification
+  - Last 32 bytes: x25519 encryption key for encrypting UTXOs
+</ResponseField>
+
+**Usage:**
+- Frontend caches public keys to enable shielded transfers to other users
+- Required before receiving shielded transfers
+- Can be registered on either L1 (via L1Unwrapper) or L2 (via TornadoPool)
+
+**Source:** `contracts/TornadoPool.sol:69`
+
+**Emitted by:** 
+- `_register()` at line 256 (TornadoPool)
+- `_register()` at line 72 (L1Unwrapper)
+
+## L1Unwrapper Events
+
+### PublicKey
+
+```solidity
+event PublicKey(address indexed owner, bytes key)
+```
+
+Identical to TornadoPool's PublicKey event. Emitted when a user registers on L1.
+
+<ResponseField name="owner" type="address" indexed>
+  Ethereum address of the account owner
+</ResponseField>
+
+<ResponseField name="key" type="bytes">
+  Public key bytes (64 bytes: 32 bytes pubkey + 32 bytes encryption key)
+</ResponseField>
+
+**Source:** `contracts/bridge/L1Unwrapper.sol:30`
+
+**Emitted by:** 
+- `register()` when explicitly registering
+- `wrapAndRelayTokens()` when depositing and registering simultaneously
+
+## Event Listening Examples
+
+<CodeGroup>
+```javascript Build Merkle Tree
+const MerkleTree = require('fixed-merkle-tree')
+const { poseidonHash2, toFixedHex } = require('./utils')
+
+async function buildMerkleTree({ tornadoPool }) {
+  const filter = tornadoPool.filters.NewCommitment()
+  const events = await tornadoPool.queryFilter(filter, 0)
+  
+  const leaves = events
+    .sort((a, b) => a.args.index - b.args.index)
+    .map((e) => toFixedHex(e.args.commitment))
+  
+  return new MerkleTree(MERKLE_TREE_HEIGHT, leaves, { 
+    hashFunction: poseidonHash2 
+  })
+}
+```
+
+```javascript Decrypt Incoming Notes
+const Utxo = require('./utxo')
+
+async function scanForIncomingNotes(tornadoPool, keypair, fromBlock = 0) {
+  const filter = tornadoPool.filters.NewCommitment()
+  const events = await tornadoPool.queryFilter(filter, fromBlock)
+  
+  const utxos = []
+  for (const event of events) {
+    try {
+      const utxo = Utxo.decrypt(
+        keypair,
+        event.args.encryptedOutput,
+        event.args.index
+      )
+      utxos.push(utxo)
+      console.log(`Found UTXO: ${utxo.amount} at index ${utxo.index}`)
+    } catch (e) {
+      // Not encrypted for this keypair
+    }
+  }
+  return utxos
+}
+```
+
+```javascript Track Spent Nullifiers
+async function getSpentNullifiers(tornadoPool, fromBlock = 0) {
+  const filter = tornadoPool.filters.NewNullifier()
+  const events = await tornadoPool.queryFilter(filter, fromBlock)
+  
+  return new Set(events.map(e => e.args.nullifier))
+}
+
+function isUtxoSpent(utxo, spentNullifiers) {
+  const nullifier = utxo.getNullifier()
+  return spentNullifiers.has(nullifier)
+}
+```
+
+```javascript Listen for Registrations
+async function getPublicKey(tornadoPool, ownerAddress) {
+  const filter = tornadoPool.filters.PublicKey(ownerAddress)
+  const events = await tornadoPool.queryFilter(filter, 0)
+  
+  if (events.length === 0) {
+    throw new Error(`No public key registered for ${ownerAddress}`)
+  }
+  
+  // Return the most recent registration
+  const latestEvent = events[events.length - 1]
+  return latestEvent.args.key
+}
+
+// Listen for new registrations
+tornadoPool.on('PublicKey', (owner, key, event) => {
+  console.log(`New registration: ${owner}`)
+  console.log(`Public key: ${key}`)
+  // Cache the public key for future use
+  publicKeyCache.set(owner, key)
+})
+```
+
+```javascript Real-time Event Monitoring
+// Monitor all pool activity in real-time
+async function monitorPool(tornadoPool) {
+  // Listen for new deposits/transfers
+  tornadoPool.on('NewCommitment', (commitment, index, encryptedOutput) => {
+    console.log(`New commitment at index ${index}: ${commitment}`)
+    // Try to decrypt if it's for us
+    try {
+      const utxo = Utxo.decrypt(myKeypair, encryptedOutput, index)
+      console.log(`Received ${utxo.amount} tokens!`)
+    } catch (e) {
+      // Not for us
+    }
+  })
+  
+  // Listen for withdrawals/spends
+  tornadoPool.on('NewNullifier', (nullifier) => {
+    console.log(`UTXO spent: ${nullifier}`)
+    // Mark local UTXO as spent
+  })
+  
+  // Listen for new registrations
+  tornadoPool.on('PublicKey', (owner, key) => {
+    console.log(`User registered: ${owner}`)
+  })
+}
+```
+</CodeGroup>
+
+## Event Filtering Tips
+
+<Tip>
+**Indexed Parameters:** The `owner` parameter in PublicKey events is indexed, allowing efficient filtering:
+
+```javascript
+// Efficient: Filter by specific owner
+const filter = tornadoPool.filters.PublicKey(userAddress)
+
+// Listen only for specific user registrations
+tornadoPool.on(filter, (owner, key) => {
+  console.log(`User ${owner} registered`)
+})
+```
+</Tip>
+
+<Warning>
+**Block Range Limits:** When querying historical events, be aware of RPC provider limits. Break large queries into smaller block ranges:
+
+```javascript
+const BLOCK_RANGE = 10000
+for (let start = fromBlock; start < toBlock; start += BLOCK_RANGE) {
+  const end = Math.min(start + BLOCK_RANGE, toBlock)
+  const events = await tornadoPool.queryFilter(filter, start, end)
+  // Process events...
+}
+```
+</Warning>
+
+## Event Order Guarantees
+
+Within a single transaction:
+1. **NewCommitment** events are emitted in order (output 0, then output 1)
+2. **NewNullifier** events are emitted after commitments, in order of inputs
+3. **PublicKey** event (if any) is emitted before transaction processing
+
+Transaction event order:
+```
+PublicKey (if registering)
+NewCommitment (output 0) at index N
+NewCommitment (output 1) at index N+1  
+NewNullifier (input 0)
+NewNullifier (input 1)
+... (up to 16 nullifiers for 16-input transactions)
+```

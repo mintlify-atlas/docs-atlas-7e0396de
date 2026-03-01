@@ -1,122 +1,145 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Tornado Nova",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7c3aed",
+    "light": "#a78bfa",
+    "dark": "#5b21b6"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/tornadocash/tornado-nova"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/tornadocash/tornado-nova"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "how-it-works"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Architecture",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "architecture/overview",
+              "architecture/utxo-model",
+              "architecture/zero-knowledge-proofs",
+              "architecture/merkle-tree"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Smart Contracts",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "contracts/tornado-pool",
+              "contracts/verifiers",
+              "contracts/merkle-tree-with-history"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Cross-Chain Bridge",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "bridge/overview",
+              "bridge/l1-unwrapper",
+              "bridge/cross-chain-guard"
+            ]
+          },
+          {
+            "group": "ZK Circuits",
+            "pages": [
+              "circuits/overview",
+              "circuits/transaction-circuits",
+              "circuits/merkle-proofs"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Developer Guide",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Setup",
             "pages": [
-              "api-reference/introduction"
+              "developer/installation",
+              "developer/building-circuits",
+              "developer/configuration"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Usage",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "developer/deposits",
+              "developer/transfers",
+              "developer/withdrawals",
+              "developer/account-registration"
+            ]
+          },
+          {
+            "group": "JavaScript SDK",
+            "pages": [
+              "sdk/overview",
+              "sdk/utxo",
+              "sdk/keypair",
+              "sdk/proof-generation",
+              "sdk/transactions"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment",
+        "groups": [
+          {
+            "group": "Deploy to Network",
+            "pages": [
+              "deployment/overview",
+              "deployment/l1-deployment",
+              "deployment/l2-deployment",
+              "deployment/configuration"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/governance",
+              "operations/upgrades",
+              "operations/limits-configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Contract API",
+            "pages": [
+              "api/tornado-pool-api",
+              "api/l1-unwrapper-api",
+              "api/events"
+            ]
+          },
+          {
+            "group": "JavaScript API",
+            "pages": [
+              "api/transaction-functions",
+              "api/utility-functions",
+              "api/types"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }
