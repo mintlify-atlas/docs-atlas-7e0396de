@@ -1,0 +1,159 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Tornado Nova",
+  "projectDescription": "Privacy pool protocol with arbitrary deposit amounts and internal shielded transfers using zero-knowledge proofs",
+  "theme": "aspen",
+  "primaryColor": "#7c3aed",
+  "lightColor": "#a78bfa",
+  "darkColor": "#5b21b6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/utxo-model",
+              "architecture/zero-knowledge-proofs",
+              "architecture/merkle-tree"
+            ]
+          },
+          {
+            "group": "Smart Contracts",
+            "pages": [
+              "contracts/tornado-pool",
+              "contracts/verifiers",
+              "contracts/merkle-tree-with-history"
+            ]
+          },
+          {
+            "group": "Cross-Chain Bridge",
+            "pages": [
+              "bridge/overview",
+              "bridge/l1-unwrapper",
+              "bridge/cross-chain-guard"
+            ]
+          },
+          {
+            "group": "ZK Circuits",
+            "pages": [
+              "circuits/overview",
+              "circuits/transaction-circuits",
+              "circuits/merkle-proofs"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Setup",
+            "pages": [
+              "developer/installation",
+              "developer/building-circuits",
+              "developer/configuration"
+            ]
+          },
+          {
+            "group": "Usage",
+            "pages": [
+              "developer/deposits",
+              "developer/transfers",
+              "developer/withdrawals",
+              "developer/account-registration"
+            ]
+          },
+          {
+            "group": "JavaScript SDK",
+            "pages": [
+              "sdk/overview",
+              "sdk/utxo",
+              "sdk/keypair",
+              "sdk/proof-generation",
+              "sdk/transactions"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment",
+        "groups": [
+          {
+            "group": "Deploy to Network",
+            "pages": [
+              "deployment/overview",
+              "deployment/l1-deployment",
+              "deployment/l2-deployment",
+              "deployment/configuration"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/governance",
+              "operations/upgrades",
+              "operations/limits-configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Contract API",
+            "pages": [
+              "api/tornado-pool-api",
+              "api/l1-unwrapper-api",
+              "api/events"
+            ]
+          },
+          {
+            "group": "JavaScript API",
+            "pages": [
+              "api/transaction-functions",
+              "api/utility-functions",
+              "api/types"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Arbitrary deposit amounts (not fixed denominations)",
+    "Internal shielded transfers between users",
+    "Zero-knowledge proof verification with zkSNARKs",
+    "Cross-chain L1↔L2 bridge integration",
+    "UTXO-based privacy model",
+    "Merkle tree commitment tracking",
+    "Governance-controlled upgrades",
+    "Support for 2 or 16 input transactions"
+  ],
+  "publicApiSurface": [
+    "TornadoPool.transact()",
+    "TornadoPool.register()",
+    "TornadoPool.registerAndTransact()",
+    "TornadoPool.onTokenBridged()",
+    "TornadoPool.verifyProof()",
+    "TornadoPool.isSpent()",
+    "L1Unwrapper.wrapAndRelayTokens()",
+    "L1Unwrapper.register()",
+    "transaction()",
+    "registerAndTransact()",
+    "prepareTransaction()",
+    "buildMerkleTree()",
+    "Utxo class",
+    "Keypair class"
+  ]
+}
